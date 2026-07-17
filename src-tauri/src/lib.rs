@@ -96,8 +96,7 @@ fn set_window_to_screen_size(app: tauri::AppHandle) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            database::bootstrap(app.handle())
-                .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
+            database::bootstrap(app.handle()).map_err(Box::<dyn std::error::Error>::from)?;
 
             // Set window to cover the primary monitor
             let handle = app.handle().clone();

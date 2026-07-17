@@ -2015,7 +2015,7 @@ fn run_due_settlements(connection: &Connection) -> Result<(), String> {
         let mut next = next_settlement_after(anchor);
         while next <= now {
             settle_one_day(connection, &character_id, next)?;
-            next = next + Duration::days(1);
+            next += Duration::days(1);
         }
     }
     Ok(())

@@ -356,11 +356,11 @@ pub fn delete_frame_asset(
         return Err("系统素材包不能删除。".to_string());
     }
 
-    let target = asset
-        .path
-        .as_ref()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| user_skins_root(app).map(|root| root.join(id)).unwrap_or_default());
+    let target = asset.path.as_ref().map(PathBuf::from).unwrap_or_else(|| {
+        user_skins_root(app)
+            .map(|root| root.join(id))
+            .unwrap_or_default()
+    });
     if !target.is_dir() {
         return Err("素材包目录不存在。".to_string());
     }
