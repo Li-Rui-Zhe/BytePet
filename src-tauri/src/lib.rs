@@ -16,6 +16,15 @@ struct ScreenInfo {
     scale_factor: f64,
 }
 
+fn restore_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_skip_taskbar(true);
+        let _ = window.set_focus();
+    }
+}
+
 #[tauri::command]
 fn set_ignore_cursor_events(app: tauri::AppHandle, ignore: bool) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("main") {
@@ -132,6 +141,7 @@ pub fn run() {
                 .tooltip("BytePet")
                 .on_menu_event(move |app, event| match event.id().as_ref() {
                     "show-toolbox" => {
+                        restore_main_window(app);
                         let _ = app.emit("tray-show-toolbox", ());
                     }
                     "lull-to-sleep" => {
@@ -155,7 +165,9 @@ pub fn run() {
                         ..
                     } = event
                     {
-                        let _ = tray.app_handle().emit("tray-show-toolbox", ());
+                        let app = tray.app_handle();
+                        restore_main_window(app);
+                        let _ = app.emit("tray-show-toolbox", ());
                     }
                 })
                 .build(app)?;
