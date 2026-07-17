@@ -89,7 +89,7 @@ export function ChatPanel({ character, messages, onClose }: ChatPanelProps) {
             placeholder={`和 ${characterName} 说点什么`}
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
+              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                 event.preventDefault();
                 void submit();
               }

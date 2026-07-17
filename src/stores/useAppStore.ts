@@ -79,6 +79,7 @@ import {
   SIT_DOWN_DURATION_MS,
 } from "../systems/movement/constants";
 import { invoke } from "@tauri-apps/api/core";
+import { partitionStreamBuffer } from "../systems/chat/streamFilter";
 
 type BehaviorFlow =
   | "idle5_yawn"
@@ -193,7 +194,6 @@ let streamDisplayBuffer = "";
 
 const CHAT_ACTIONS = new Set(["calm", "happy", "sad", "angry", "comfort", "cheer_up"]);
 const ACTIVE_ACTION_KEYS = new Set(["eat_food", "wake_up", "sleeping", "run_left", "run_right", "fall_down", "fly_up", "sit", "sit_down"]);
-const STREAM_ACTION_TAG_BUFFER_CHARS = 128;
 const PHYSICAL_STATE_KEYS = new Set([FALL_KEY, "dizzy", "fly_up"]);
 const INTERACTION_STATE_KEYS = new Set(["thinking", "eat_food", "happy", "sad", "angry", "comfort", "cheer_up", "error", WAKE_UP_KEY]);
 const DEFAULT_SHORT_ACTION_KEYS = ["action1", "action2"];
@@ -359,41 +359,14 @@ function enqueueTypewriter(set: (partial: Partial<AppStoreState> | ((state: AppS
   typewriterTimer = setTimeout(tick, 18);
 }
 
-function flushVisibleStreamPrefix(
-  set: (partial: Partial<AppStoreState> | ((state: AppStoreState) => Partial<AppStoreState>)) => void,
-  text: string
-): string {
-  const visibleLength = Math.max(0, text.length - STREAM_ACTION_TAG_BUFFER_CHARS);
-  if (visibleLength <= 0) return text;
-
-  enqueueTypewriter(set, text.slice(0, visibleLength));
-  return text.slice(visibleLength);
-}
-
 function enqueueVisibleStreamChunk(
   set: (partial: Partial<AppStoreState> | ((state: AppStoreState) => Partial<AppStoreState>)) => void,
   content: string
 ): void {
   streamDisplayBuffer += content;
-
-  while (true) {
-    const lower = streamDisplayBuffer.toLowerCase();
-    const toolStart = lower.indexOf("<tool_call");
-    if (toolStart < 0) break;
-
-    const toolEnd = lower.indexOf("</tool_call>", toolStart);
-    if (toolEnd < 0) {
-      const beforeToolCall = streamDisplayBuffer.slice(0, toolStart);
-      const pendingToolCall = streamDisplayBuffer.slice(toolStart);
-      streamDisplayBuffer = flushVisibleStreamPrefix(set, beforeToolCall) + pendingToolCall;
-      return;
-    }
-
-    const endIndex = toolEnd + "</tool_call>".length;
-    streamDisplayBuffer = streamDisplayBuffer.slice(0, toolStart) + streamDisplayBuffer.slice(endIndex);
-  }
-
-  streamDisplayBuffer = flushVisibleStreamPrefix(set, streamDisplayBuffer);
+  const partition = partitionStreamBuffer(streamDisplayBuffer);
+  streamDisplayBuffer = partition.pending;
+  if (partition.visible) enqueueTypewriter(set, partition.visible);
 }
 
 function applyBootstrap(set: (partial: Partial<AppStoreState>) => void, payload: BootstrapPayload): void {
@@ -513,6 +486,10 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
 
   updatePhysics: (dt: number) => {
     const state = get();
+
+    if (state.onGround && state.movementState.type === "idle" && !state.throwTween) {
+      return;
+    }
 
     // Handle throw tween
     if (state.throwTween) {
