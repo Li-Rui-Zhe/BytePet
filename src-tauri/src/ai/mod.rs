@@ -327,24 +327,26 @@ pub fn build_http_client(_config: &ProviderConfig) -> Result<reqwest::Client, St
         .map_err(|error| format!("HTTP client build failed: {}", error))
 }
 
-pub fn drain_complete_lines(buffer: &mut String, chunk: &[u8]) -> Vec<String> {
-    buffer.push_str(&String::from_utf8_lossy(chunk));
+pub fn drain_complete_lines(buffer: &mut Vec<u8>, chunk: &[u8]) -> Vec<String> {
+    buffer.extend_from_slice(chunk);
 
     let mut lines = Vec::new();
-    while let Some(newline_index) = buffer.find('\n') {
-        let mut line = buffer[..newline_index].to_string();
-        if line.ends_with('\r') {
+    while let Some(newline_index) = buffer.iter().position(|byte| *byte == b'\n') {
+        let mut line = buffer.drain(..=newline_index).collect::<Vec<_>>();
+        line.pop();
+        if line.last() == Some(&b'\r') {
             line.pop();
         }
-        lines.push(line);
-        buffer.drain(..=newline_index);
+        lines.push(String::from_utf8_lossy(&line).into_owned());
     }
 
     lines
 }
 
-pub fn drain_remaining_line(buffer: &mut String) -> Option<String> {
-    let line = buffer.trim_matches(['\r', '\n']).to_string();
+pub fn drain_remaining_line(buffer: &mut Vec<u8>) -> Option<String> {
+    let line = String::from_utf8_lossy(buffer)
+        .trim_matches(['\r', '\n'])
+        .to_string();
     buffer.clear();
 
     if line.trim().is_empty() {
@@ -568,7 +570,26 @@ pub async fn test_connection(app: &AppHandle, provider_id: &str) -> Result<Strin
 
 #[cfg(test)]
 mod tests {
-    use super::{build_endpoint, parse_pet_action_response};
+    use super::{
+        build_endpoint, drain_complete_lines, drain_remaining_line, parse_pet_action_response,
+    };
+
+    #[test]
+    fn streaming_line_buffer_preserves_utf8_split_across_chunks() {
+        let bytes = "你好\n下一行".as_bytes();
+        let mut buffer = Vec::new();
+
+        assert!(drain_complete_lines(&mut buffer, &bytes[..1]).is_empty());
+        assert_eq!(
+            drain_complete_lines(&mut buffer, &bytes[1..7]),
+            vec!["你好".to_string()]
+        );
+        assert!(drain_complete_lines(&mut buffer, &bytes[7..]).is_empty());
+        assert_eq!(
+            drain_remaining_line(&mut buffer),
+            Some("下一行".to_string())
+        );
+    }
 
     #[test]
     fn openai_compatible_appends_chat_completions_without_forcing_v1() {

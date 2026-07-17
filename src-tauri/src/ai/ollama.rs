@@ -122,7 +122,7 @@ pub async fn stream_chat(
 
     let mut full_response = String::new();
     let mut stream = response.bytes_stream();
-    let mut line_buffer = String::new();
+    let mut line_buffer = Vec::new();
 
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result.map_err(|e| {
