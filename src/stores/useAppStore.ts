@@ -394,7 +394,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   dataPaths: null,
   character: null,
   characters: [],
-  frameAssets: [{ id: "rick_default", name: "绯荤粺榛樿 Rick", path: null, builtIn: true, importedAt: null, shortActionKeys: DEFAULT_SHORT_ACTION_KEYS }],
+  frameAssets: [{ id: "rick_default", name: "系统默认 Rick", path: null, builtIn: true, importedAt: null, shortActionKeys: DEFAULT_SHORT_ACTION_KEYS }],
   stats: null,
   foods: [],
   settings: null,
@@ -568,7 +568,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       updates.onGround = true;
       updates.currentState = createRuntimeState(FALL_KEY);
 
-      // fall_down 4甯14fps 鈮?286ms 鎾畬鍚庡垏 dizzy
+        // fall_down has 4 frames at 14fps; switch to dizzy after it finishes.
       setTimeout(() => {
         const cur = get();
         if (cur.onGround && cur.currentState.definition.key === "fall_down") {
@@ -581,8 +581,8 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
               idleTimer: cur.activePanel ? 999999 : cur.movementState.idleTimer,
             },
           });
-          // dizzy durationMs=6000锛岀敱 tickAnimation 鑷姩鍒版湡 鈫?calm
-          // dizzy 鍒版湡鍚庯紝tickMovement 浼氳嚜鍔ㄦ仮澶?walk
+          // tickAnimation returns dizzy to calm after its configured duration.
+          // tickMovement can resume autonomous movement after dizzy expires.
         }
         // 落地后自动发送排队消息
         if (cur.pendingChatMessage && cur.onGround) {
@@ -752,7 +752,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       activePanel: panel,
       boxOpen: false,
       chatOpen: true,
-      // 鍋滄绉诲姩锛屾挱鏀?calm
+      // Stop moving and play calm.
       movementState: { ...state.movementState, type: "idle", animationKey: IDLE_KEY, idleTimer: 999999 },
       body: { ...state.body, vx: 0 },
       currentState:
@@ -903,7 +903,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
 
   resetStats: async () => {
     applyBootstrap(set, await resetStats());
-    set({ currentState: createRuntimeState("calm"), bubble: "鑳介噺涓庡ソ鎰熷凡閲嶇疆" });
+    set({ currentState: createRuntimeState("calm"), bubble: "能量与好感已重置" });
   },
 
   validateSkinPath: (path) => validateSkinPath(path),
@@ -918,7 +918,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       const frameAssets = await listFrameAssets();
       set({
         frameAssets: mergeFrameAsset(frameAssets, asset),
-        bubble: "搴忓垪甯ц祫婧愬凡瀵煎叆",
+        bubble: "序列帧资源已导入",
       });
     }
     return asset;
@@ -929,7 +929,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     const frameAssets = await listFrameAssets();
     set({
       frameAssets: mergeFrameAsset(frameAssets, asset),
-      bubble: "搴忓垪甯ц祫婧愬凡瀵煎叆",
+      bubble: "序列帧资源已导入",
     });
     return asset;
   },
@@ -1082,7 +1082,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     const state = get();
     set(interactionReset());
 
-    // Physical motion loop protection 鈥?queue message if in fly_up/fall_down/dizzy
+    // Queue the message until physical fly/fall/dizzy motion finishes.
     const mType = state.movementState.type;
     if (
       !state.onGround ||
@@ -1181,7 +1181,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
             currentRequestId: null,
             currentSessionId: null,
             currentState: createRuntimeState("error"),
-            bubble: evt.message ?? "AI 璇锋眰澶辫触",
+            bubble: evt.message ?? "AI 请求失败",
           });
           unlisten.then((fn) => fn());
           break;
@@ -1201,7 +1201,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       }
     });
 
-    // Start streaming (fire and forget 鈥?events come via listener)
+    // Start streaming; progress arrives through the event listener.
     try {
       await streamAiMessage(requestId, sessionId, content.trim());
       applyBootstrap(set, await bootstrapApp());
@@ -1212,7 +1212,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         streamingContent: "",
         currentRequestId: null,
         currentState: createRuntimeState("error"),
-        bubble: err instanceof Error ? err.message : "AI 璇锋眰澶辫触",
+        bubble: err instanceof Error ? err.message : "AI 请求失败",
       });
       unlisten.then((fn) => fn());
     }
@@ -1242,7 +1242,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
           sessionId,
           characterId: state.character?.id ?? "",
           role: "assistant",
-          content: `${partial}\n\n[宸蹭腑鏂璢`,
+          content: `${partial}\n\n[已中断]`,
           createdAt: now,
           tokenCount: partial.length,
           metadataJson: JSON.stringify({ status: "interrupted" }),

@@ -683,7 +683,7 @@ fn ensure_legacy_columns(connection: &Connection) -> Result<(), String> {
         connection,
         "foods",
         "category",
-        "ALTER TABLE foods ADD COLUMN category TEXT NOT NULL DEFAULT '鏁版嵁椋熺墿';",
+        "ALTER TABLE foods ADD COLUMN category TEXT NOT NULL DEFAULT '数据食物';",
     )?;
     ensure_column(
         connection,
@@ -2341,7 +2341,7 @@ pub fn replace_food(app: &AppHandle, request: FoodReplaceRequest) -> Result<Food
     foods(&connection, &character.id)?
         .into_iter()
         .find(|food| food.id == existing.id)
-        .ok_or_else(|| "璇诲彇鏇挎崲鍚庣殑椋熺墿澶辫触".to_string())
+        .ok_or_else(|| "读取替换后的食物失败".to_string())
 }
 
 pub fn reorder_foods(app: &AppHandle, food_ids: Vec<String>) -> Result<Vec<FoodItem>, String> {
