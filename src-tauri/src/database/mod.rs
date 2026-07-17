@@ -1,7 +1,7 @@
 use chrono::{DateTime, Datelike, Duration, Local, NaiveTime, TimeZone, Weekday};
 use rand::seq::SliceRandom;
 use rand::Rng;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -285,6 +285,9 @@ fn open_connection(app: &AppHandle) -> Result<Connection, String> {
     let connection = Connection::open(db_path(app)?).map_err(|error| error.to_string())?;
     connection
         .pragma_update(None, "foreign_keys", "ON")
+        .map_err(|error| error.to_string())?;
+    connection
+        .busy_timeout(std::time::Duration::from_secs(5))
         .map_err(|error| error.to_string())?;
     Ok(connection)
 }
@@ -2213,10 +2216,13 @@ fn maybe_drop_food(
 }
 
 pub fn feed_food(app: &AppHandle, food_id: String) -> Result<FeedResult, String> {
-    let connection = open_connection(app)?;
-    let character = active_character(&connection)?;
-    let current_stats = stats(&connection, &character.id)?;
-    let food = foods(&connection, &character.id)?
+    let mut connection = open_connection(app)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    let character = active_character(&transaction)?;
+    let current_stats = stats(&transaction, &character.id)?;
+    let food = foods(&transaction, &character.id)?
         .into_iter()
         .find(|item| item.id == food_id)
         .ok_or_else(|| "Food does not exist.".to_string())?;
@@ -2235,24 +2241,38 @@ pub fn feed_food(app: &AppHandle, food_id: String) -> Result<FeedResult, String>
     let next_affection = clamp(current_stats.affection + affection_delta, 0.0, 100.0);
     let now = now_string();
 
-    connection
+    let affected_rows = transaction
         .execute(
             "UPDATE food_inventory SET count=count-1,updated_at=?1 WHERE character_id=?2 AND food_id=?3 AND count>0",
             params![now, character.id, food.id],
         )
         .map_err(|error| error.to_string())?;
-    connection
+    if affected_rows != 1 {
+        let updated_food = foods(&transaction, &character.id)?
+            .into_iter()
+            .find(|item| item.id == food.id)
+            .ok_or_else(|| "Failed to read food after feeding.".to_string())?;
+        return Ok(FeedResult {
+            food: updated_food,
+            stats: stats(&transaction, &character.id)?,
+            triggered_state_key: "feed_blocked".to_string(),
+            message: "No inventory for this food.".to_string(),
+        });
+    }
+
+    transaction
         .execute(
             "UPDATE pet_stats SET energy=?1,affection=?2,updated_at=?3 WHERE character_id=?4",
             params![next_energy, next_affection, now, character.id],
         )
         .map_err(|error| error.to_string())?;
 
-    let updated_food = foods(&connection, &character.id)?
+    let updated_food = foods(&transaction, &character.id)?
         .into_iter()
         .find(|item| item.id == food.id)
         .ok_or_else(|| "Failed to read food after feeding.".to_string())?;
-    let updated_stats = stats(&connection, &character.id)?;
+    let updated_stats = stats(&transaction, &character.id)?;
+    transaction.commit().map_err(|error| error.to_string())?;
     let triggered_state_key = "feed_neutral";
     Ok(FeedResult {
         food: updated_food,
