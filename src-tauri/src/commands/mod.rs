@@ -268,11 +268,53 @@ pub async fn stream_ai_message(
 
     match result {
         Ok(chat_result) => {
-            database::save_assistant_message(&app, &session_id, &character.id, &chat_result.reply)?;
-            database::record_completed_chat_round(&app, &character.id)?;
-            Ok(())
+            let persisted = (|| {
+                database::save_assistant_message(
+                    &app,
+                    &session_id,
+                    &character.id,
+                    &chat_result.reply,
+                )?;
+                database::record_completed_chat_round(&app, &character.id).map(|_| ())
+            })();
+
+            match persisted {
+                Ok(()) => {
+                    let _ = app.emit(
+                        "ai-chat-event",
+                        ai::AiChatEvent::Done {
+                            request_id,
+                            session_id,
+                            full_response: chat_result.reply,
+                            action: chat_result.action,
+                        },
+                    );
+                    Ok(())
+                }
+                Err(err) => {
+                    let _ = app.emit(
+                        "ai-chat-event",
+                        ai::AiChatEvent::Error {
+                            request_id,
+                            session_id,
+                            message: err.clone(),
+                        },
+                    );
+                    Err(err)
+                }
+            }
         }
-        Err(err) => Err(err),
+        Err(err) => {
+            let _ = app.emit(
+                "ai-chat-event",
+                ai::AiChatEvent::Error {
+                    request_id,
+                    session_id,
+                    message: err.clone(),
+                },
+            );
+            Err(err)
+        }
     }
 }
 

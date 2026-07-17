@@ -493,39 +493,13 @@ pub async fn stream_ai_chat(
         _ => Err(format!("Unknown provider type: {}", config.provider_type)),
     };
 
-    match result {
-        Ok(full_response) => {
-            let latest_user_text = messages
-                .iter()
-                .rev()
-                .find(|message| message.role == "user")
-                .map(|message| message.content.as_str());
-            let parsed = parse_pet_action_response(&full_response, latest_user_text);
-            // Emit done event
-            let _ = app.emit(
-                "ai-chat-event",
-                AiChatEvent::Done {
-                    request_id: request_id.clone(),
-                    session_id: session_id.clone(),
-                    full_response: parsed.reply.clone(),
-                    action: parsed.action.clone(),
-                },
-            );
-            Ok(parsed)
-        }
-        Err(err_msg) => {
-            // Emit error event
-            let _ = app.emit(
-                "ai-chat-event",
-                AiChatEvent::Error {
-                    request_id: request_id.clone(),
-                    session_id: session_id.clone(),
-                    message: err_msg.clone(),
-                },
-            );
-            Err(err_msg)
-        }
-    }
+    let full_response = result?;
+    let latest_user_text = messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "user")
+        .map(|message| message.content.as_str());
+    Ok(parse_pet_action_response(&full_response, latest_user_text))
 }
 
 /// Test connection for a provider

@@ -1051,6 +1051,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     if (!content.trim()) return;
 
     const state = get();
+    if (state.chatStreaming) return;
     set(interactionReset());
 
     // Queue the message until physical fly/fall/dizzy motion finishes.
@@ -1097,95 +1098,129 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     };
     set((s) => ({ messages: [...s.messages, userMsg] }));
 
-    const unlisten = listen<AiChatEvent>("ai-chat-event", (event) => {
-      const evt = event.payload;
-      if (evt.request_id !== requestId) return;
+    let terminalHandled = false;
+    let unlisten: (() => void) | null = null;
+    const finishTerminal = (): boolean => {
+      if (terminalHandled) return false;
+      terminalHandled = true;
+      unlisten?.();
+      unlisten = null;
+      return true;
+    };
 
-      switch (evt.event) {
-        case "start":
-          // Already in thinking state
-          break;
+    try {
+      unlisten = await listen<AiChatEvent>("ai-chat-event", (event) => {
+        const evt = event.payload;
+        if (evt.request_id !== requestId || terminalHandled) return;
 
-        case "delta":
-          enqueueVisibleStreamChunk(set, evt.content ?? "");
-          break;
+        switch (evt.event) {
+          case "start":
+            // Already in thinking state
+            break;
 
-        case "done": {
-          clearTypewriter();
-          const fullResponse = evt.full_response ?? get().streamingContent;
-          const animKey = normalizeChatAction(evt.action);
-          set({
-            chatStreaming: false,
-            streamingContent: "",
-            currentRequestId: null,
-            currentSessionId: null,
-          });
+          case "delta":
+            enqueueVisibleStreamChunk(set, evt.content ?? "");
+            break;
 
-          // Add assistant message to local messages
-          const assistantMsg: ChatMessage = {
-            id: crypto.randomUUID(),
-            sessionId,
-            characterId: state.character?.id ?? "",
-            role: "assistant",
-            content: fullResponse,
-            createdAt: new Date().toISOString(),
-            tokenCount: 0,
-            metadataJson: JSON.stringify({
-              action: animKey,
-              rawAction: evt.action ?? null,
-            }),
-          };
-          set((s) => ({
-            messages: [...s.messages, assistantMsg],
-            currentState: canPlayChatAction(s) ? createRuntimeState(animKey) : s.currentState,
-          }));
+          case "done": {
+            if (!finishTerminal()) break;
+            clearTypewriter();
+            const fullResponse = evt.full_response ?? get().streamingContent;
+            const animKey = normalizeChatAction(evt.action);
+            const assistantMsg: ChatMessage = {
+              id: crypto.randomUUID(),
+              sessionId,
+              characterId: userMsg.characterId,
+              role: "assistant",
+              content: fullResponse,
+              createdAt: new Date().toISOString(),
+              tokenCount: 0,
+              metadataJson: JSON.stringify({
+                action: animKey,
+                rawAction: evt.action ?? null,
+              }),
+            };
+            set((s) => ({
+              chatStreaming: false,
+              streamingContent: "",
+              currentRequestId: null,
+              currentSessionId: null,
+              messages: [...s.messages, assistantMsg],
+              currentState: canPlayChatAction(s) ? createRuntimeState(animKey) : s.currentState,
+            }));
 
-          unlisten.then((fn) => fn());
-          break;
+            // The backend emits done only after persistence succeeds. Refresh
+            // metadata without replacing the locally rendered chat messages.
+            void bootstrapApp()
+              .then((payload) => {
+                if (get().character?.id !== userMsg.characterId) return;
+                set({
+                  stats: payload.stats,
+                  foods: payload.foods,
+                  sessions: payload.sessions,
+                });
+              })
+              .catch(() => {
+                // The completed reply is already persisted and visible.
+              });
+            break;
+          }
+
+          case "error": {
+            if (!finishTerminal()) break;
+            clearTypewriter();
+            set({
+              chatStreaming: false,
+              streamingContent: "",
+              currentRequestId: null,
+              currentSessionId: null,
+              currentState: createRuntimeState("error"),
+              bubble: evt.message ?? "AI 请求失败",
+            });
+            break;
+          }
+
+          case "aborted": {
+            if (!finishTerminal()) break;
+            clearTypewriter();
+            set({
+              chatStreaming: false,
+              currentRequestId: null,
+              currentSessionId: null,
+              currentState: createRuntimeState("calm"),
+            });
+            break;
+          }
         }
-
-        case "error": {
-          clearTypewriter();
-          set({
-            chatStreaming: false,
-            streamingContent: "",
-            currentRequestId: null,
-            currentSessionId: null,
-            currentState: createRuntimeState("error"),
-            bubble: evt.message ?? "AI 请求失败",
-          });
-          unlisten.then((fn) => fn());
-          break;
-        }
-
-        case "aborted": {
-          clearTypewriter();
-          set({
-            chatStreaming: false,
-            currentRequestId: null,
-            currentSessionId: null,
-            currentState: createRuntimeState("calm"),
-          });
-          unlisten.then((fn) => fn());
-          break;
-        }
-      }
-    });
+      });
+    } catch (err) {
+      clearTypewriter();
+      set((s) => ({
+        chatStreaming: false,
+        streamingContent: "",
+        currentRequestId: null,
+        currentSessionId: null,
+        currentState: createRuntimeState("error"),
+        bubble: err instanceof Error ? err.message : "无法监听 AI 回复",
+        messages: s.messages.filter((message) => message.id !== userMsg.id),
+      }));
+      return;
+    }
 
     // Start streaming; progress arrives through the event listener.
     try {
       await streamAiMessage(requestId, sessionId, content.trim());
-      applyBootstrap(set, await bootstrapApp());
     } catch (err) {
-      // If invoke itself fails (not the stream), clean up
+      if (!finishTerminal()) return;
+      clearTypewriter();
       set({
         chatStreaming: false,
         streamingContent: "",
         currentRequestId: null,
+        currentSessionId: null,
         currentState: createRuntimeState("error"),
         bubble: err instanceof Error ? err.message : "AI 请求失败",
       });
-      unlisten.then((fn) => fn());
     }
   },
 
@@ -1196,15 +1231,16 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     const sessionId = state.currentSessionId ?? state.sessions[0]?.id ?? "";
     const partial = state.streamingContent;
 
-    // Track rapid cancels for interaction angry
-    get().trackRapidCancel();
-    clearTypewriter();
-
     try {
       await abortAiRequestApi(requestId);
     } catch {
-      // Request may have already completed
+      // Completion already won the race; let its terminal event finish the UI.
+      return;
     }
+
+    // Only an accepted abort is allowed to create an interrupted message.
+    get().trackRapidCancel();
+    clearTypewriter();
 
     const now = new Date().toISOString();
     const assistantMsg: ChatMessage | null = partial.trim()
