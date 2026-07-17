@@ -126,8 +126,8 @@ export async function recordPetInteraction(): Promise<BootstrapPayload> {
   });
 }
 
-export async function saveInterruptedAiMessage(requestId: string, sessionId: string, content: string): Promise<BootstrapPayload> {
-  return invokeOrMock("save_interrupted_ai_message", { requestId, sessionId, content }, () => {
+export async function saveInterruptedAiMessage(sessionId: string, content: string): Promise<BootstrapPayload> {
+  return invokeOrMock("save_interrupted_ai_message", { sessionId, content }, () => {
     const now = new Date().toISOString();
     mockState = {
       ...mockState,

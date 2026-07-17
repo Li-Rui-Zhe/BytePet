@@ -1267,7 +1267,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
 
     if (sessionId && partial.trim()) {
       try {
-        applyBootstrap(set, await saveInterruptedAiMessage(requestId, sessionId, partial));
+        applyBootstrap(set, await saveInterruptedAiMessage(sessionId, partial));
       } catch {
         // Local interrupted message is already preserved.
       }

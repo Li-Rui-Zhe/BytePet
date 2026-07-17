@@ -342,6 +342,5 @@ pub async fn save_interrupted_ai_message(
     session_id: String,
     content: String,
 ) -> Result<BootstrapPayload, String> {
-    let character = database::bootstrap(&app)?.character;
-    database::save_interrupted_ai_message(&app, &session_id, &character.id, &content)
+    database::save_interrupted_ai_message(&app, &session_id, &content)
 }

@@ -2731,23 +2731,35 @@ pub fn record_completed_chat_round(
 pub fn save_interrupted_ai_message(
     app: &AppHandle,
     session_id: &str,
-    character_id: &str,
     content: &str,
 ) -> Result<BootstrapPayload, String> {
-    let connection = open_connection(app)?;
+    let mut connection = open_connection(app)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    let character_id: String = transaction
+        .query_row(
+            "SELECT character_id FROM chat_sessions WHERE id=?1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "聊天会话不存在。".to_string())?;
     let now = now_string();
     if !content.trim().is_empty() {
+        let interrupted_content = format!("{}\n\n[已中断]", content.trim_end());
         let message = ChatMessage {
             id: Uuid::new_v4().to_string(),
             session_id: session_id.to_string(),
-            character_id: character_id.to_string(),
+            character_id: character_id.clone(),
             role: "assistant".to_string(),
-            content: content.to_string(),
+            token_count: interrupted_content.chars().count() as i64,
+            content: interrupted_content,
             created_at: now.clone(),
-            token_count: content.chars().count() as i64,
             metadata_json: Some(json!({ "status": "interrupted" }).to_string()),
         };
-        connection
+        transaction
             .execute(
                 "INSERT INTO chat_messages(id,session_id,character_id,role,content,created_at,token_count,metadata_json)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
@@ -2763,7 +2775,7 @@ pub fn save_interrupted_ai_message(
                 ],
             )
             .map_err(|error| error.to_string())?;
-        connection
+        transaction
             .execute(
                 "UPDATE chat_sessions SET updated_at=?1 WHERE id=?2",
                 params![now, session_id],
@@ -2771,8 +2783,10 @@ pub fn save_interrupted_ai_message(
             .map_err(|error| error.to_string())?;
     }
     let date = local_date_key();
-    record_completed_chat_round_with_connection(&connection, character_id, &date, &now)?;
-    fetch_bootstrap(app, &connection)
+    record_completed_chat_round_with_connection(&transaction, &character_id, &date, &now)?;
+    let payload = fetch_bootstrap(app, &transaction)?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(payload)
 }
 
 /// Get chat history for a session (for building AI context)
