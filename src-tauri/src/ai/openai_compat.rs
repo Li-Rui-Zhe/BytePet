@@ -38,17 +38,17 @@ struct ChatResponse {
     choices: Vec<ChatChoice>,
 }
 
-fn build_headers(config: &ProviderConfig) -> reqwest::header::HeaderMap {
+fn build_headers(config: &ProviderConfig) -> Result<reqwest::header::HeaderMap, String> {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(
         reqwest::header::CONTENT_TYPE,
-        "application/json".parse().unwrap(),
+        reqwest::header::HeaderValue::from_static("application/json"),
     );
-    headers.insert(
-        reqwest::header::AUTHORIZATION,
-        format!("Bearer {}", config.api_key).parse().unwrap(),
-    );
-    headers
+    let authorization =
+        reqwest::header::HeaderValue::from_str(&format!("Bearer {}", config.api_key))
+            .map_err(|_| "API key contains invalid header characters".to_string())?;
+    headers.insert(reqwest::header::AUTHORIZATION, authorization);
+    Ok(headers)
 }
 
 fn build_request_body(
@@ -130,7 +130,7 @@ pub async fn stream_chat(
 
     let response = client
         .post(&endpoint)
-        .headers(build_headers(config))
+        .headers(build_headers(config)?)
         .json(&body)
         .timeout(std::time::Duration::from_millis(config.timeout_ms as u64))
         .send()
@@ -213,7 +213,7 @@ pub async fn test_request(
 
     let response = client
         .post(&endpoint)
-        .headers(build_headers(config))
+        .headers(build_headers(config)?)
         .json(&body)
         .timeout(std::time::Duration::from_millis(10000))
         .send()

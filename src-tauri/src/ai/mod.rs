@@ -293,10 +293,15 @@ pub fn build_endpoint(base_url: &str, provider_type: &str, model: &str) -> Strin
 
 /// Mask sensitive strings in logs
 pub fn mask_sensitive(text: &str) -> String {
-    if text.len() <= 8 {
+    let chars = text.chars().collect::<Vec<_>>();
+    if chars.len() <= 8 {
         return "***".to_string();
     }
-    format!("{}...{}", &text[..4], &text[text.len() - 4..])
+    format!(
+        "{}...{}",
+        chars[..4].iter().collect::<String>(),
+        chars[chars.len() - 4..].iter().collect::<String>()
+    )
 }
 
 /// Keep provider diagnostics useful without dumping huge vendor responses.
@@ -589,6 +594,15 @@ mod tests {
             drain_remaining_line(&mut buffer),
             Some("下一行".to_string())
         );
+    }
+
+    #[test]
+    fn sensitive_value_masking_is_safe_for_unicode() {
+        assert_eq!(
+            super::mask_sensitive("一二三四五六七八九"),
+            "一二三四...六七八九"
+        );
+        assert_eq!(super::mask_sensitive("短密钥"), "***");
     }
 
     #[test]

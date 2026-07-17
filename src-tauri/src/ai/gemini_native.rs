@@ -56,33 +56,27 @@ struct CandidatePart {
 fn build_url(config: &ProviderConfig) -> String {
     let base = config.base_url.trim_end_matches('/');
     format!(
-        "{}/v1beta/models/{}:streamGenerateContent?alt=sse&key={}",
-        base, config.model, config.api_key
+        "{}/v1beta/models/{}:streamGenerateContent?alt=sse",
+        base, config.model
     )
 }
 
 fn build_safe_stream_url(config: &ProviderConfig) -> String {
-    let base = config.base_url.trim_end_matches('/');
-    format!(
-        "{}/v1beta/models/{}:streamGenerateContent?alt=sse&key=***",
-        base, config.model
-    )
+    build_url(config)
 }
 
 fn build_generate_url(config: &ProviderConfig) -> String {
     let base = config.base_url.trim_end_matches('/');
-    format!(
-        "{}/v1beta/models/{}:generateContent?key={}",
-        base, config.model, config.api_key
-    )
+    format!("{}/v1beta/models/{}:generateContent", base, config.model)
 }
 
 fn build_safe_generate_url(config: &ProviderConfig) -> String {
-    let base = config.base_url.trim_end_matches('/');
-    format!(
-        "{}/v1beta/models/{}:generateContent?key=***",
-        base, config.model
-    )
+    build_generate_url(config)
+}
+
+fn api_key_header(config: &ProviderConfig) -> Result<reqwest::header::HeaderValue, String> {
+    reqwest::header::HeaderValue::from_str(&config.api_key)
+        .map_err(|_| "API key contains invalid header characters".to_string())
 }
 
 fn build_request_body(config: &ProviderConfig, messages: &[AiChatMessage]) -> GenerateRequest {
@@ -187,6 +181,7 @@ pub async fn stream_chat(
     let response = client
         .post(&url)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header("x-goog-api-key", api_key_header(config)?)
         .json(&body)
         .timeout(std::time::Duration::from_millis(config.timeout_ms as u64))
         .send()
@@ -272,6 +267,7 @@ pub async fn test_request(
     let response = client
         .post(&url)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header("x-goog-api-key", api_key_header(config)?)
         .json(&body)
         .timeout(std::time::Duration::from_millis(10000))
         .send()
