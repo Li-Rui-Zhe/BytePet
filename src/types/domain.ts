@@ -119,15 +119,6 @@ export interface BootstrapPayload {
   messages: ChatMessage[];
 }
 
-export interface ChatSendResult {
-  session: ChatSession;
-  userMessage: ChatMessage;
-  assistantMessage: ChatMessage;
-  stats: PetStats;
-  foods: FoodItem[];
-  triggeredStateKey: string;
-}
-
 export interface FeedResult {
   food: FoodItem;
   stats: PetStats;

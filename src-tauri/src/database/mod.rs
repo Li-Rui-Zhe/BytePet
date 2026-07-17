@@ -137,17 +137,6 @@ pub struct BootstrapPayload {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ChatSendResult {
-    pub session: ChatSession,
-    pub user_message: ChatMessage,
-    pub assistant_message: ChatMessage,
-    pub stats: PetStats,
-    pub foods: Vec<FoodItem>,
-    pub triggered_state_key: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct FeedResult {
     pub food: FoodItem,
     pub stats: PetStats,
@@ -2064,103 +2053,6 @@ fn get_or_create_session(
         .into_iter()
         .find(|session| session.id == id)
         .ok_or_else(|| "Failed to create chat session.".to_string())
-}
-
-pub fn send_chat_message(
-    app: &AppHandle,
-    content: String,
-    session_id: Option<String>,
-) -> Result<ChatSendResult, String> {
-    let connection = open_connection(app)?;
-    let character = active_character(&connection)?;
-    let session = get_or_create_session(&connection, &character.id, session_id)?;
-    let now = now_string();
-    let date = local_date_key();
-    ensure_daily_activity(&connection, &character.id, &date)?;
-
-    let user_message = ChatMessage {
-        id: Uuid::new_v4().to_string(),
-        session_id: session.id.clone(),
-        character_id: character.id.clone(),
-        role: "user".to_string(),
-        content: content.clone(),
-        created_at: now.clone(),
-        token_count: content.chars().count() as i64,
-        metadata_json: None,
-    };
-    connection
-        .execute(
-            "INSERT INTO chat_messages(id,session_id,character_id,role,content,created_at,token_count,metadata_json)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,NULL)",
-            params![
-                user_message.id,
-                user_message.session_id,
-                user_message.character_id,
-                user_message.role,
-                user_message.content,
-                user_message.created_at,
-                user_message.token_count
-            ],
-        )
-        .map_err(|error| error.to_string())?;
-
-    connection
-        .execute(
-            "UPDATE pet_stats SET today_chat_rounds=today_chat_rounds+1,last_chat_at=?2,today_had_activity=1,energy=MAX(0,energy-1),updated_at=?2 WHERE character_id=?3",
-            params![date, now, character.id],
-        )
-        .map_err(|error| error.to_string())?;
-    connection
-        .execute(
-            "UPDATE daily_activity SET chat_round_count=chat_round_count+1 WHERE date=?1 AND character_id=?2",
-            params![date, character.id],
-        )
-        .map_err(|error| error.to_string())?;
-    let chat_rounds = stats(&connection, &character.id)?.today_chat_rounds;
-    maybe_drop_food(&connection, &character.id, &date, chat_rounds, 3, &now)?;
-
-    let reply = format!("I heard you: {content}. This is a local mock reply.");
-    let assistant_message = ChatMessage {
-        id: Uuid::new_v4().to_string(),
-        session_id: session.id.clone(),
-        character_id: character.id.clone(),
-        role: "assistant".to_string(),
-        content: reply,
-        created_at: now.clone(),
-        token_count: 0,
-        metadata_json: Some(json!({ "mock": true }).to_string()),
-    };
-    connection
-        .execute(
-            "INSERT INTO chat_messages(id,session_id,character_id,role,content,created_at,token_count,metadata_json)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-            params![
-                assistant_message.id,
-                assistant_message.session_id,
-                assistant_message.character_id,
-                assistant_message.role,
-                assistant_message.content,
-                assistant_message.created_at,
-                assistant_message.token_count,
-                assistant_message.metadata_json
-            ],
-        )
-        .map_err(|error| error.to_string())?;
-    connection
-        .execute(
-            "UPDATE chat_sessions SET updated_at=?1 WHERE id=?2",
-            params![now, session.id],
-        )
-        .map_err(|error| error.to_string())?;
-
-    Ok(ChatSendResult {
-        session,
-        user_message,
-        assistant_message,
-        stats: stats(&connection, &character.id)?,
-        foods: foods(&connection, &character.id)?,
-        triggered_state_key: "thinking".to_string(),
-    })
 }
 
 fn maybe_drop_food(

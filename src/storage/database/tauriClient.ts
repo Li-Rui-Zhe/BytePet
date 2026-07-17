@@ -1,14 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { DEFAULT_FOODS } from "../../config/defaultFoods";
 import { applyFeed } from "../../systems/food/foodRules";
-import { createRuntimeState } from "../../systems/stateMachine/runtime";
 import type {
   AiProviderConfig,
   AppSettings,
   BootstrapPayload,
   ChatHistoryDay,
   ChatMessage,
-  ChatSendResult,
   CreateCharacterRequest,
   FeedResult,
   FrameAssetOption,
@@ -38,53 +36,6 @@ export async function bootstrapApp(): Promise<BootstrapPayload> {
   return invokeOrMock("bootstrap_app", {}, () => {
     mockState = createMockBootstrap();
     return mockState;
-  });
-}
-
-export async function sendChatMessage(content: string, sessionId: string | null): Promise<ChatSendResult> {
-  return invokeOrMock("send_chat_message", { content, sessionId }, () => {
-    const session = mockState.sessions[0];
-    const now = new Date().toISOString();
-    const userMessage: ChatMessage = {
-      id: crypto.randomUUID(),
-      sessionId: session.id,
-      characterId: mockState.character.id,
-      role: "user",
-      content,
-      createdAt: now,
-      tokenCount: content.length,
-      metadataJson: null
-    };
-    const assistantMessage: ChatMessage = {
-      id: crypto.randomUUID(),
-      sessionId: session.id,
-      characterId: mockState.character.id,
-      role: "assistant",
-      content: `我听到啦：${content}。现在先用本地 mock 回复，真实 AI 接口已经预留在设置里。`,
-      createdAt: now,
-      tokenCount: 0,
-      metadataJson: JSON.stringify({ mock: true })
-    };
-
-    mockState = {
-      ...mockState,
-      stats: {
-        ...mockState.stats,
-        todayChatRounds: mockState.stats.todayChatRounds + 1,
-        lastChatAt: now,
-        updatedAt: now
-      },
-      messages: [...mockState.messages, userMessage, assistantMessage]
-    };
-
-    return {
-      session,
-      userMessage,
-      assistantMessage,
-      stats: mockState.stats,
-      foods: mockState.foods,
-      triggeredStateKey: createRuntimeState("thinking").definition.key
-    };
   });
 }
 

@@ -10,7 +10,6 @@ import {
   resetStats,
   saveSettings,
   saveInterruptedAiMessage,
-  sendChatMessage,
   validateSkinPath,
   streamAiMessage,
   abortAiRequest as abortAiRequestApi,
@@ -45,7 +44,7 @@ import type {
   SkinValidationReport,
   UpdateCharacterRequest
 } from "../types/domain";
-import { createRuntimeState, resolveExpiredState, transitionTo } from "../systems/stateMachine/runtime";
+import { createRuntimeState, resolveExpiredState } from "../systems/stateMachine/runtime";
 import type { RuntimeAnimationState } from "../systems/stateMachine/types";
 import {
   createBody,
@@ -142,7 +141,6 @@ interface AppStoreState {
   bootstrap: () => Promise<void>;
   openPanel: (panel: ActivePanel) => void;
   closePanel: () => void;
-  sendMessage: (content: string) => Promise<void>;
   feed: (foodId: string) => Promise<FeedResult | null>;
   replaceFood: (request: FoodReplaceRequest) => Promise<void>;
   reorderFoods: (foodIds: string[]) => Promise<void>;
@@ -772,33 +770,6 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       ? { ...state.movementState, idleTimer: 0 }
       : state.movementState,
   })),
-
-  sendMessage: async (content) => {
-    if (!content.trim()) {
-      return;
-    }
-
-    set(interactionReset());
-    const sessionId = get().sessions[0]?.id ?? null;
-    set((state) => ({ currentState: transitionTo(state.currentState, "thinking") }));
-
-    try {
-      const result = await sendChatMessage(content.trim(), sessionId);
-      set((state) => ({
-        sessions: state.sessions.some((session) => session.id === result.session.id) ? state.sessions : [result.session, ...state.sessions],
-        messages: [...state.messages, result.userMessage, result.assistantMessage],
-        stats: result.stats,
-        foods: result.foods,
-        currentState: createRuntimeState(result.triggeredStateKey)
-      }));
-    } catch (error) {
-      set({
-        error: error instanceof Error ? error.message : "聊天发送失败",
-        currentState: createRuntimeState("error"),
-        bubble: "AI 请求失败"
-      });
-    }
-  },
 
   feed: async (foodId) => {
     const wakingFromSleep = get().currentState.definition.key === SLEEPING_KEY || get().behaviorFlow === "waking";

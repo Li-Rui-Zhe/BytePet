@@ -6,9 +6,9 @@ use tokio::sync::Mutex;
 
 use crate::ai;
 use crate::database::{
-    self, AiProviderConfig, AppSettings, BootstrapPayload, ChatSendResult, CreateCharacterRequest,
-    FeedResult, FoodItem, FoodReplaceRequest, FrameAssetOption, SaveAiProviderRequest,
-    SkinValidationReport, UpdateCharacterRequest,
+    self, AiProviderConfig, AppSettings, BootstrapPayload, CreateCharacterRequest, FeedResult,
+    FoodItem, FoodReplaceRequest, FrameAssetOption, SaveAiProviderRequest, SkinValidationReport,
+    UpdateCharacterRequest,
 };
 use crate::resources;
 
@@ -18,15 +18,6 @@ static ACTIVE_REQUEST: once_cell::sync::Lazy<Arc<Mutex<Option<String>>>> =
 #[tauri::command]
 pub fn bootstrap_app(app: AppHandle) -> Result<BootstrapPayload, String> {
     database::bootstrap(&app)
-}
-
-#[tauri::command]
-pub fn send_chat_message(
-    app: AppHandle,
-    content: String,
-    session_id: Option<String>,
-) -> Result<ChatSendResult, String> {
-    database::send_chat_message(&app, content, session_id)
 }
 
 #[tauri::command]

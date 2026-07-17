@@ -164,7 +164,6 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::bootstrap_app,
-            commands::send_chat_message,
             commands::feed_food,
             commands::replace_food,
             commands::reorder_foods,
