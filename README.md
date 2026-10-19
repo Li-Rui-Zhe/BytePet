@@ -1,6 +1,6 @@
 # BytePet
 
-BytePet 是一款基于 Tauri、React、Rust 和 SQLite 打造的开源 AI 桌宠。它会在桌面上散步、打盹，回应你的拖拽与喂食；你也可以导入自定义角色、接入不同的 AI 模型，随时和它聊聊天。角色资料与聊天记录保存在本机，让陪伴自然融入日常。现提供 Windows 安装包及 macOS Apple Silicon 测试版。
+BytePet 是一个基于 Tauri 2、React 和 Rust 构建的桌面 AI 桌宠。它支持可导入 PNG 序列帧角色、独立人物档案、AI 聊天、多模型 Provider 配置、喂食与好感/能量系统、主题颜色切换、托盘菜单和本地数据持久化。
 
 ## 下载
 
