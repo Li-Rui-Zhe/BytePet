@@ -1,6 +1,6 @@
 # Windows / macOS 一起打包
 
-更新时间：2026-10-25。此流程用于构建测试包，不自动创建新版本标签或发布 Release。
+更新时间：2026-10-25。main / 手动构建生成 Artifacts；版本标签构建全部成功后发布同名 Release，不自动创建或移动 Git 标签。
 
 ## 一次运行产出什么
 
@@ -19,7 +19,7 @@
 3. 如需重试或构建其他分支，使用 **Run workflow** 选择目标分支运行；main 已自动启动时，不必再手动重复触发。
 4. 等三个任务全部成功，在该次运行页面底部下载对应的 Artifacts。
 
-main 的 push 自动触发打包，其他开发分支 push / pull request 不触发。推送 `v*` 标签也会触发，标签必须精确等于 `v` 加项目版本号。目前 package.json、Cargo.toml 和 tauri.conf.json 都是 `0.1.0`；构建不会自动递增版本。以后发新版先同步三个版本号，再创建新的、不重复的版本标签。同一分支重复推送会取消此前尚未完成的同分支构建。
+main 的 push 自动触发打包，其他开发分支 push / pull request 不触发。推送 `v*` 标签也会触发，标签必须精确等于 `v` 加项目版本号。目前 package.json、Cargo.toml 和 tauri.conf.json 都是 `0.2.0`；Cargo.lock 的项目条目也必须一致。构建不会自动递增版本。以后发新版先同步版本和锁文件、补充 `docs/releases/v版本号.md`，再创建新的、不重复的版本标签。同一分支重复推送会取消此前尚未完成的同分支构建。
 
 手动入口受 GitHub 默认分支的 workflow 存在性限制，详见 [GitHub 手动运行说明](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)。为保留已有 workflow 的文件身份，本流程文件仍叫 `.github/workflows/build-macos.yml`，网页显示名已经改为跨平台名称；不要再新建同内容 workflow，避免重复打包。
 
@@ -37,7 +37,9 @@ Windows 依赖系统 WebView2；缺失时安装器会联网下载，当前不是
 
 ## 发布与安全边界
 
-构建只有仓库读取权限，不会自动创建或更新 GitHub Release，也不会自动把包挂到下载页。上传源码不等于发布新版本，Actions 产物通过后仍需你决定何时正式发布。
+构建任务只有仓库读取权限。仅版本标签事件启用单独的发布任务：三个平台全部成功后，下载本次运行对应的三个 Artifact，重新校验全部六个包的 SHA-256，合并校验文件，然后先上传到草稿 Release，完整成功后发布为 `BytePet v版本号`。失败不会公开发布半套安装包；已经发布的 Release 不会被自动覆盖。草稿失败时可重跑发布任务继续上传。
+
+只有发布任务获得 `contents: write`，使用 GitHub 自动提供的临时 GITHUB_TOKEN，不需要自己创建 PAT 或把聊天 API Key 放进仓库。main / 手动运行不会创建 Release，标签也不会由 workflow 自动新建。未来每个正式标签都需要对应的 Markdown 发布说明。
 
 Windows 当前未配置代码签名，可能出现 SmartScreen 提示；Mac 只做 ad-hoc 签名，未公证。不要关闭系统全局安全保护。公开发行及减少警告需要后续单独接入代码签名；证书和密码只能放受保护的 Secrets，不能提交。
 

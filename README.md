@@ -2,31 +2,34 @@
 
 BytePet 是一个基于 Tauri 2、React 和 Rust 构建的桌面 AI 桌宠。它支持可导入 PNG 序列帧角色、独立人物档案、AI 聊天（默认 DeepSeek，支持高级自定义接口）、主题颜色切换、托盘菜单和本地数据持久化。
 
-> 下文功能与教程对应当前开发分支。Releases 中已发布的 v0.1.0 安装包可能尚未包含这些改动；推送源码不等于发布了新的安装包。
+> 下文功能与教程对应 v0.2.0。源码推送不等于安装包已发布，请以对应标签的 Release 附件为准；main 可能包含尚未发布的后续改动。
 
 ## 下载
 
 最新版本可以在 GitHub Releases 下载：
 
-[下载 BytePet v0.1.0](https://github.com/hub12345666/BytePet/releases/tag/v0.1.0)
+[下载 BytePet v0.2.0](https://github.com/Li-Rui-Zhe/BytePet/releases/tag/v0.2.0)
 
 当前版本提供：
 
-- Windows：`BytePet_0.1.0_x64-setup.exe`
-- Windows 备用安装包：`BytePet_0.1.0_x64_en-US.msi`
-- macOS Apple Silicon 测试包：`BytePet_0.1.0_aarch64.dmg`
+- Windows：`BytePet_0.2.0_x64-setup.exe`
+- Windows 备用安装包：`BytePet_0.2.0_x64.msi`
+- macOS Apple Silicon 实验包：`BytePet_0.2.0_arm64.dmg`
+- macOS Intel 实验包：`BytePet_0.2.0_x86_64.dmg`
 
-Releases 中旧 macOS 包属于早期测试包，未完成全面实机验收和 Apple 公证。首次打开可能出现安全提示；应先确认来源，再按 [Apple 官方说明](https://support.apple.com/en-us/102445) 操作，不要全局关闭系统安全保护。
+macOS 为实验性支持，未完成全面实机验收和 Apple 公证。首次打开可能出现安全提示；应先确认来源，再按 [Apple 官方说明](https://support.apple.com/en-us/102445) 操作，不要全局关闭系统安全保护。
 
 ### 当前开发版的 Windows / macOS 构建
 
 当前开发分支按 macOS 13.3+ 适配，Intel 与 Apple Silicon 分别原生构建，包含透明窗口、菜单栏托盘、Retina／Dock 可用区域处理和系统钥匙串存储。macOS 实机验收仍须在首轮 Actions 构建后完成，不能仅凭 Windows 测试宣称全部通过。
 
-GitHub Actions 的 `Build Desktop (Windows & macOS)` 支持推送 main 自动构建、手动运行和版本标签触发，一次并行构建 Windows x64、Mac Intel 和 Mac Apple Silicon。Windows 输出 EXE / MSI，Mac 输出 DMG / 保留权限的 `.app.zip`，各自附带 SHA-256 校验文件。其他开发分支推送不触发打包，不自动发布 Release。Windows 包尚未代码签名；Mac 使用 ad-hoc 临时签名，未做 Developer ID 签名与 Apple 公证。不需要将 DeepSeek Key 加入构建配置。
+GitHub Actions 的 `Build Desktop (Windows & macOS)` 支持推送 main 自动构建、手动运行和版本标签触发，一次并行构建 Windows x64、Mac Intel 和 Mac Apple Silicon。Windows 输出 EXE / MSI，Mac 输出 DMG / 保留权限的 `.app.zip`，各自附带 SHA-256 校验文件。其他开发分支推送不触发打包。只有版本标签构建全部成功后才自动发布同名 Release；main 和手动构建只生成 Artifacts。Windows 包尚未代码签名；Mac 使用 ad-hoc 临时签名，未做 Developer ID 签名与 Apple 公证。不需要将 DeepSeek Key 加入构建配置。
 
 详细步骤见 [跨平台 Actions 打包指南](docs/跨平台Actions打包指南.md)；Mac 适配细节见 [macOS 兼容与 Actions 打包指南](docs/macOS兼容与Actions打包指南.md)。
 
 本次功能收敛、安全修复与跨平台适配内容见 [2026-10-25 更新说明](docs/main更新说明-2026-10-25.md)。
+
+本次版本相对旧版的完整对比见 [v0.2.0 发布说明](docs/releases/v0.2.0.md)。
 
 ## 皮肤素材
 

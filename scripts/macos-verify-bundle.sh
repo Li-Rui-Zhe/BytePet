@@ -23,7 +23,7 @@ exe="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$info")"
 [[ "$exe" != */* && -n "$exe" ]]
 binary="$app/Contents/MacOS/$exe"
 test -x "$binary"
-lipo -verify_arch "$arch" "$binary"
+lipo "$binary" -verify_arch "$arch"
 codesign --verify --deep --strict --verbose=2 "$app"
 version="$(node -p 'JSON.parse(require("fs").readFileSync("package.json","utf8")).version')"
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$info")" == "$version" ]]

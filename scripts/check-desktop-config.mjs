@@ -10,8 +10,10 @@ export function checkDesktopConfig(root = process.cwd()) {
   const mac = JSON.parse(read('src-tauri/tauri.macos.conf.json'));
   const windows = JSON.parse(read('src-tauri/tauri.windows.conf.json'));
   const cargo = read('src-tauri/Cargo.toml');
+  const cargoLock = read('src-tauri/Cargo.lock');
   assert.equal(base.version, packageJson.version, 'package.json and Tauri version differ');
   assert.equal(cargo.match(/^version\s*=\s*"([^"]+)"/m)?.[1], base.version, 'Cargo package version differs');
+  assert.equal(cargoLock.match(/\[\[package\]\]\s+name = "bytepet"\s+version = "([^"]+)"/)?.[1], base.version, 'Cargo lockfile package version differs');
   assert.equal(mac.bundle.macOS.minimumSystemVersion, '13.3');
   assert.equal(mac.bundle.macOS.signingIdentity, '-', 'Default CI builds must remain explicitly ad-hoc signed');
   assert.deepEqual(mac.bundle.targets, ['app', 'dmg']);
