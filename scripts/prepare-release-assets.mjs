@@ -31,12 +31,15 @@ export function prepareReleaseAssets(root = process.cwd()) {
       verified.push({ name, path, hash });
     }
   }
+  // Verify the backups as well, but expose only one recommended installer per platform.
+  const published = verified.filter(({ name }) => name.endsWith('-setup.exe') || name.endsWith('.dmg'));
+  assert.equal(published.length, 3, 'Expected one primary installer per platform');
   const output = resolve(root, 'artifacts', 'release');
   assert.ok(!fs.existsSync(output), 'Refusing to mix release assets with a previous output');
   fs.mkdirSync(output);
-  for (const asset of verified) fs.copyFileSync(asset.path, resolve(output, asset.name));
-  fs.writeFileSync(resolve(output, 'SHA256SUMS.txt'), verified.map(({ hash, name }) => `${hash}  ${name}\n`).join(''));
-  return { version, packages: verified.length, output };
+  for (const asset of published) fs.copyFileSync(asset.path, resolve(output, asset.name));
+  fs.writeFileSync(resolve(output, 'SHA256SUMS.txt'), published.map(({ hash, name }) => `${hash}  ${name}\n`).join(''));
+  return { version, verifiedPackages: verified.length, packages: published.length, output };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

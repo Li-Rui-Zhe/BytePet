@@ -36,15 +36,21 @@ afterEach(() => {
   }
 });
 describe('release packages', () => {
-  it('requires all platforms and produces six packages plus one combined checksum file', () => {
+  it('verifies all six packages but publishes only three primary installers and their checksums', () => {
     const root = fixture();
     const result = prepareReleaseAssets(root);
-    expect(result.packages).toBe(6);
-    expect(fs.readdirSync(result.output)).toHaveLength(7);
-    expect(fs.readFileSync(resolve(result.output, 'SHA256SUMS.txt'), 'utf8').trim().split('\n')).toHaveLength(6);
+    expect(result.verifiedPackages).toBe(6);
+    expect(result.packages).toBe(3);
+    expect(fs.readdirSync(result.output).sort()).toEqual([
+      'BytePet_0.2.0_arm64.dmg', 'BytePet_0.2.0_x64-setup.exe',
+      'BytePet_0.2.0_x86_64.dmg', 'SHA256SUMS.txt',
+    ].sort());
+    const manifest = fs.readFileSync(resolve(result.output, 'SHA256SUMS.txt'), 'utf8').trim();
+    expect(manifest.split('\n')).toHaveLength(3);
+    expect(manifest).not.toMatch(/\.msi|\.app\.zip/);
     expect(() => prepareReleaseAssets(root)).toThrow('previous output');
   });
-  it('refuses a modified package before creating any release output', () => {
+  it('also refuses a modified backup package before creating any release output', () => {
     const root = fixture();
     fs.appendFileSync(resolve(root, 'artifacts/windows-x64/BytePet_0.2.0_x64.msi'), 'changed');
     expect(() => prepareReleaseAssets(root)).toThrow('Checksum mismatch');

@@ -4,6 +4,8 @@
 
 ## 一次运行产出什么
 
+下表为 Actions 保留的完整构建产物。面向普通用户的 Release 只发布 Windows EXE、Mac Intel DMG、Mac Apple Silicon DMG 及这三个文件的校验值，不发布 MSI 和 app.zip。GitHub 自动生成的 Source code 源码项不属于安装包。
+
 | 任务 | 运行环境 | 安装包 |
 | --- | --- | --- |
 | Windows x64 | windows-2022，原生 MSVC | EXE（推荐）和 MSI（备用，二选一安装） |
@@ -37,7 +39,7 @@ Windows 依赖系统 WebView2；缺失时安装器会联网下载，当前不是
 
 ## 发布与安全边界
 
-构建任务只有仓库读取权限。仅版本标签事件启用单独的发布任务：三个平台全部成功后，下载本次运行对应的三个 Artifact，重新校验全部六个包的 SHA-256，合并校验文件，然后先上传到草稿 Release，完整成功后发布为 `BytePet v版本号`。失败不会公开发布半套安装包；已经发布的 Release 不会被自动覆盖。草稿失败时可重跑发布任务继续上传。
+构建任务只有仓库读取权限。仅版本标签事件启用单独的发布任务：三个平台全部成功后，下载本次运行对应的三个 Artifact，重新校验全部六个包的 SHA-256，但只选取三个推荐安装包并生成对应的三条校验值，然后先上传到草稿 Release，完整成功后发布为 `BytePet v版本号`。失败不会公开发布半套安装包；已经发布的 Release 不会被自动覆盖。草稿失败时可重跑发布任务继续上传。MSI 和 app.zip 仅留在对应 Actions 的 Artifacts 中，保留期为 14 天。
 
 只有发布任务获得 `contents: write`，使用 GitHub 自动提供的临时 GITHUB_TOKEN，不需要自己创建 PAT 或把聊天 API Key 放进仓库。main / 手动运行不会创建 Release，标签也不会由 workflow 自动新建。未来每个正式标签都需要对应的 Markdown 发布说明。
 

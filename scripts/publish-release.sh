@@ -9,7 +9,7 @@ tag="${RELEASE_TAG:?release tag required}"
 notes="docs/releases/$tag.md"
 test -s "$notes"
 assets=(artifacts/release/*)
-[[ ${#assets[@]} -eq 7 ]]
+[[ ${#assets[@]} -eq 4 ]]
 
 # Upload all packages to a draft first; a partial upload must not become public.
 if existing="$(gh release view "$tag" --json isDraft --jq '.isDraft' 2>/dev/null)"; then
