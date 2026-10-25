@@ -1,0 +1,7 @@
+{
+  "defaultModel": "deepseek-flash",
+  "models": [
+    { "id": "deepseek-flash", "label": "DeepSeek Flash（默认）" },
+    { "id": "deepseek-v4-pro", "label": "DeepSeek V4 Pro" }
+  ]
+}

@@ -1,8 +1,9 @@
 import { SendHorizonal, Square } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import type { ChatMessage, CharacterProfile } from "../types/domain";
 import { useAppStore } from "../stores/useAppStore";
 import { PanelShell } from "./PanelShell";
+import { chatInputHeight, shouldSendChatOnEnter } from "../utils/chatComposer";
 
 interface ChatPanelProps {
   character: CharacterProfile | null;
@@ -11,12 +12,19 @@ interface ChatPanelProps {
 }
 
 export function ChatPanel({ character, messages, onClose }: ChatPanelProps) {
-  const [input, setInput] = useState("");
+  const input = useAppStore((s) => s.chatDrafts[character?.id ?? ""] ?? "");
+  const setChatDraft = useAppStore((s) => s.setChatDraft);
+  const pendingChatMessage = useAppStore((s) => s.pendingChatMessage);
+  const cancelPendingChat = useAppStore((s) => s.cancelPendingChat);
   const streamingContent = useAppStore((s) => s.streamingContent);
+  const chatStopping = useAppStore((s) => s.chatStopping);
   const chatStreaming = useAppStore((s) => s.chatStreaming);
   const sendAiChat = useAppStore((s) => s.sendAiChat);
   const abortAiRequest = useAppStore((s) => s.abortAiRequest);
+  const error = useAppStore((s) => s.error);
+  const openPanel = useAppStore((s) => s.openPanel);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const isBusy = chatStreaming;
   const characterName = character?.name?.trim() || "当前人物";
@@ -30,27 +38,51 @@ export function ChatPanel({ character, messages, onClose }: ChatPanelProps) {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [visibleMessages.length, streamingContent, chatStreaming]);
 
+  useLayoutEffect(() => {
+    const textarea = inputRef.current;
+    if (!textarea) return;
+    const fitInput = () => {
+      textarea.style.height = "0px";
+      textarea.style.height = `${chatInputHeight(textarea.scrollHeight)}px`;
+    };
+    fitInput();
+    // Reflow wrapped drafts when the user resizes the panel.
+    let previousWidth = textarea.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (textarea.clientWidth === previousWidth) return;
+      previousWidth = textarea.clientWidth;
+      fitInput();
+    });
+    observer.observe(textarea);
+    return () => observer.disconnect();
+  }, [input, character?.id]);
+
   async function submit(): Promise<void> {
-    if (!input.trim() || isBusy) return;
-    const content = input;
-    setInput("");
-    await sendAiChat(content);
+    if (!input.trim() || isBusy || pendingChatMessage) return;
+    await sendAiChat(input);
   }
 
   function handleAbort(): void {
-    void abortAiRequest();
+    void abortAiRequest().catch(() => {});
   }
 
   return (
-    <PanelShell title="聊天" subtitle={character ? `${character.name} 的独立上下文` : "本地上下文"} onClose={onClose}>
-      <div className="flex h-full flex-col gap-3">
-        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+    <PanelShell title="聊天" subtitle={characterName} preferredSize={{ width: 380, height: 480 }} className="chat-shell" onClose={onClose}>
+      <div className="chat-layout">
+        {error ? <div role="alert" className="ui-notice ui-notice-danger chat-notice">
+          <p className="whitespace-pre-wrap break-words">{error}</p>
+          <button className="ui-link" type="button" onClick={() => openPanel("settings")}>打开聊天连接设置</button>
+        </div> : null}
+        {pendingChatMessage ? <div role="status" className="ui-notice chat-notice">
+          <p>等待角色落地、恢复后发送。消息仍保留在输入框中。</p>
+          <button type="button" className="ui-link" onClick={cancelPendingChat}>取消等待，继续编辑</button>
+        </div> : null}
+        <div className="chat-messages ui-scroll" role="log" aria-label="聊天消息">
+          {!visibleMessages.length && !chatStreaming ? <div className="ui-empty chat-empty"><p>想说点什么？</p><span>和 {characterName} 打个招呼吧。</span></div> : null}
           {visibleMessages.map((message) => (
             <div key={message.id} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
               <div
-                className={`max-w-[78%] rounded-[8px] px-3 py-2 text-[12px] leading-relaxed ${
-                  message.role === "user" ? "bg-blue-500 text-white" : "border border-sky-100 bg-white/82 text-slate-700"
-                }`}
+                className={`chat-bubble ${message.role === "user" ? "chat-bubble-user" : "chat-bubble-assistant"}`}
               >
                 {message.content}
                 {message.metadataJson?.includes("interrupted") ? (
@@ -63,7 +95,7 @@ export function ChatPanel({ character, messages, onClose }: ChatPanelProps) {
           {/* Streaming message */}
           {chatStreaming && streamingContent ? (
             <div className="flex justify-start">
-              <div className="max-w-[78%] rounded-[8px] border border-sky-100 bg-white/82 px-3 py-2 text-[12px] leading-relaxed text-slate-700">
+              <div className="chat-bubble chat-bubble-assistant">
                 {streamingContent}
                 <span className="ml-0.5 inline-block animate-pulse text-sky-400">|</span>
               </div>
@@ -73,8 +105,8 @@ export function ChatPanel({ character, messages, onClose }: ChatPanelProps) {
           {/* Waiting indicator (thinking state, no chunks yet) */}
           {chatStreaming && !streamingContent ? (
             <div className="flex justify-start">
-              <div className="rounded-[8px] border border-sky-100 bg-white/82 px-3 py-2 text-[12px] text-slate-400">
-                <span className="inline-block animate-pulse">思考中...</span>
+              <div className="chat-bubble chat-bubble-assistant">
+                <span className="inline-block animate-pulse">{chatStopping ? "正在停止…" : "思考中…"}</span>
               </div>
             </div>
           ) : null}
@@ -82,40 +114,51 @@ export function ChatPanel({ character, messages, onClose }: ChatPanelProps) {
           <div ref={messagesEndRef} />
         </div>
 
-        <div className="rounded-[8px] border border-sky-100 bg-white/65 p-2">
+        <div className="chat-composer">
           <textarea
-            className="h-16 w-full resize-none rounded-[8px] border border-transparent bg-white/75 px-3 py-2 text-[12px] text-slate-700 outline-none focus:border-cyan-200"
+            ref={inputRef}
+            rows={2}
+            className="ui-input ui-textarea chat-input"
+            aria-label="聊天输入"
+            aria-describedby="chat-keyboard-hint"
             value={input}
             placeholder={`和 ${characterName} 说点什么`}
-            onChange={(event) => setInput(event.target.value)}
+            disabled={Boolean(pendingChatMessage)}
+            onChange={(event) => { if (character) setChatDraft(character.id, event.target.value); }}
             onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
+              if (shouldSendChatOnEnter({ key: event.key, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing, keyCode: event.nativeEvent.keyCode })) {
                 event.preventDefault();
                 void submit();
               }
             }}
           />
 
-          {isBusy ? (
-            <button
-              className="mt-2 flex h-8 w-full items-center justify-center gap-1.5 rounded-[8px] border border-rose-200 bg-white text-[12px] font-semibold text-rose-600 shadow-sm transition hover:border-rose-300 hover:bg-rose-50 active:scale-[0.99]"
-              type="button"
-              onClick={handleAbort}
-            >
-              <Square size={12} />
-              停止生成
-            </button>
-          ) : (
-            <button
-              className="mt-2 flex h-8 w-full items-center justify-center gap-1.5 rounded-[8px] bg-blue-500 text-[12px] font-semibold text-white shadow-sm transition hover:bg-blue-600 disabled:cursor-not-allowed disabled:bg-slate-300"
-              type="button"
-              disabled={!input.trim()}
-              onClick={() => void submit()}
-            >
-              <SendHorizonal size={14} />
-              发送
-            </button>
-          )}
+          <div className="chat-composer-toolbar">
+            <span id="chat-keyboard-hint" className="chat-keyboard-hint">Enter 发送<span> · Shift + Enter 换行</span></span>
+            {isBusy ? (
+              <button
+                className="ui-button ui-button-secondary ui-button-danger chat-send"
+                type="button"
+                aria-label={chatStopping ? "正在停止生成" : "停止生成"}
+                title={chatStopping ? "正在停止…" : "停止生成"}
+                disabled={chatStopping}
+                onClick={handleAbort}
+              >
+                <Square size={12} />
+              </button>
+            ) : (
+              <button
+                className="ui-button ui-button-primary chat-send"
+                type="button"
+                aria-label="发送消息"
+                title="发送消息（Enter）"
+                disabled={!input.trim() || Boolean(pendingChatMessage) || !character}
+                onClick={() => void submit()}
+              >
+                <SendHorizonal size={16} />
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </PanelShell>

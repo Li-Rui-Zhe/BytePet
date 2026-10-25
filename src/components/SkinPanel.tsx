@@ -1,13 +1,15 @@
 import { CheckCircle2, FolderOpen, Pencil, Trash2, UploadCloud, UserRoundPlus } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   CharacterProfile,
   CreateCharacterRequest,
   FrameAssetOption,
   UpdateCharacterRequest,
 } from "../types/domain";
+import { createScaleSaver } from "../systems/physics/scaleSaver";
 import { PanelShell } from "./PanelShell";
+import { RangeSlider } from "./RangeSlider";
 
 interface SkinPanelProps {
   character: CharacterProfile | null;
@@ -64,12 +66,15 @@ export function SkinPanel({
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [pendingDeleteAssetId, setPendingDeleteAssetId] = useState<string | null>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
-  const scaleSaveTimers = useRef<Record<string, number>>({});
-
-  const editingCharacter = useMemo(
-    () => characters.find((item) => item.id === editingId) ?? null,
-    [characters, editingId]
-  );
+  const mountedRef = useRef(true);
+  const saveScaleRef = useRef(onUpdateCharacterScale);
+  saveScaleRef.current = onUpdateCharacterScale;
+  const scaleSaverRef = useRef<ReturnType<typeof createScaleSaver> | null>(null);
+  if (!scaleSaverRef.current) {
+    scaleSaverRef.current = createScaleSaver((id, value) => saveScaleRef.current(id, value), (err) => {
+      if (mountedRef.current) setError(errorMessage(err, "角色大小保存失败"));
+    });
+  }
   const selectedAsset = frameAssets.find((asset) => asset.id === selectedAssetId) ?? frameAssets[0];
   const selectedAssetUsers = selectedAsset
     ? characters.filter((profile) => profile.skinId === selectedAsset.id)
@@ -81,49 +86,19 @@ export function SkinPanel({
     selectedAssetUsers.length === 0;
 
   useEffect(() => {
-    return () => {
-      Object.values(scaleSaveTimers.current).forEach((timerId) => window.clearTimeout(timerId));
-    };
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; scaleSaverRef.current?.flush(); };
   }, []);
-
-  const scheduleScaleSave = useCallback(
-    (characterId: string, displayScale: number) => {
-      const previousTimer = scaleSaveTimers.current[characterId];
-      if (previousTimer) {
-        window.clearTimeout(previousTimer);
-      }
-      scaleSaveTimers.current[characterId] = window.setTimeout(() => {
-        void onUpdateCharacterScale(characterId, displayScale).catch((err) => {
-          setError(errorMessage(err, "角色大小保存失败"));
-        });
-      }, 260);
-    },
-    [onUpdateCharacterScale]
-  );
 
   const updateScale = useCallback(
     (profile: CharacterProfile, rawScale: number) => {
       if (!profile.isActive) return;
       const displayScale = Math.min(MAX_CHARACTER_SCALE, Math.max(MIN_CHARACTER_SCALE, rawScale));
       onPreviewCharacterScale(profile.id, displayScale);
-      scheduleScaleSave(profile.id, displayScale);
+      scaleSaverRef.current?.schedule(profile.id, displayScale);
     },
-    [onPreviewCharacterScale, scheduleScaleSave]
+    [onPreviewCharacterScale]
   );
-
-  useEffect(() => {
-    if (mode === "edit" && editingCharacter) {
-      setName(editingCharacter.name);
-      setPrompt(editingCharacter.prompt || editingCharacter.description);
-      const match = frameAssets.find(
-        (asset) =>
-          asset.id === editingCharacter.skinId ||
-          (asset.path && asset.path === editingCharacter.frameAssetsPath)
-      );
-      setSelectedAssetId(match?.id ?? "rick_default");
-      setError(null);
-    }
-  }, [editingCharacter, frameAssets, mode]);
 
   function resetCreateForm(): void {
     setMode("create");
@@ -137,6 +112,11 @@ export function SkinPanel({
   }
 
   function editProfile(profile: CharacterProfile): void {
+    setName(profile.name);
+    setPrompt(profile.prompt || profile.description);
+    const asset = frameAssets.find(item => item.id === profile.skinId || Boolean(item.path && item.path === profile.frameAssetsPath));
+    setSelectedAssetId(asset?.id ?? "rick_default");
+    setError(null);
     setMode("edit");
     setEditingId(profile.id);
     setPendingDeleteId(null);
@@ -171,6 +151,9 @@ export function SkinPanel({
   );
 
   useEffect(() => {
+    // getCurrentWebview reads native metadata synchronously; a Promise catch
+    // alone cannot protect the browser preview from that initial failure.
+    if (!window.__TAURI_INTERNALS__) return;
     let unlisten: (() => void) | null = null;
     let cancelled = false;
 
@@ -322,27 +305,27 @@ export function SkinPanel({
   }
 
   return (
-    <PanelShell title="人物" subtitle={character ? `当前人物：${character.name}` : "新建和管理人物"} onClose={onClose}>
-      <div className="h-full min-h-0 overflow-y-auto overscroll-contain pr-1">
+    <PanelShell title="人物" subtitle={character ? `当前人物：${character.name}` : "新建和管理人物"} preferredSize={{ width: 380, height: 580 }} className="characters-shell" onClose={onClose}>
+      <div className="panel-scroll ui-scroll">
         <div className="flex min-h-full flex-col gap-3 pb-2">
-          <div className="rounded-[8px] border border-sky-100 bg-white/72 p-3">
+          <div className="ui-card">
             <div className="mb-2 flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 text-sky-700">
                 <UserRoundPlus size={17} />
                 <span className="text-[12px] font-semibold">{mode === "edit" ? "编辑人物" : "新建人物"}</span>
               </div>
               {mode === "edit" ? (
-                <button className="text-[11px] font-semibold text-sky-600" type="button" onClick={resetCreateForm}>
+                <button className="ui-link" type="button" onClick={resetCreateForm}>
                   新建
                 </button>
               ) : null}
             </div>
 
             <div className="space-y-2">
-              <label className="block text-[11px] font-semibold text-slate-600">
+              <label className="ui-field">
                 人物名字
                 <input
-                  className="mt-1 h-9 w-full rounded-[8px] border border-sky-100 bg-white/84 px-3 text-[12px] outline-none focus:border-cyan-300"
+                  className="ui-input"
                   value={name}
                   maxLength={30}
                   placeholder="最多 30 个字符"
@@ -350,10 +333,10 @@ export function SkinPanel({
                 />
               </label>
 
-              <label className="block text-[11px] font-semibold text-slate-600">
+              <label className="ui-field">
                 人物 prompt
                 <textarea
-                  className="mt-1 h-20 w-full resize-none rounded-[8px] border border-sky-100 bg-white/84 px-3 py-2 text-[12px] outline-none focus:border-cyan-300"
+                  className="ui-input ui-textarea"
                   value={prompt}
                   maxLength={1000}
                   placeholder="描述人物性格、说话方式和行为边界"
@@ -361,10 +344,10 @@ export function SkinPanel({
                 />
               </label>
 
-              <label className="block text-[11px] font-semibold text-slate-600">
+              <label className="ui-field">
                 PNG 序列帧资源
                 <select
-                  className="mt-1 h-9 w-full rounded-[8px] border border-sky-100 bg-white/84 px-3 text-[12px] outline-none focus:border-cyan-300"
+                  className="ui-input"
                   value={selectedAssetId}
                   onChange={(event) => {
                     setSelectedAssetId(event.target.value);
@@ -381,9 +364,8 @@ export function SkinPanel({
 
               <div
                 ref={dropZoneRef}
-                className={`rounded-[8px] border border-dashed px-3 py-3 text-center text-[11px] transition ${
-                  dragActive ? "border-sky-400 bg-sky-50 text-sky-700" : "border-sky-200 bg-white/62 text-slate-500"
-                }`}
+                className="ui-dropzone"
+                data-drag-active={dragActive}
                 onDragOver={(event) => {
                   event.preventDefault();
                   setDragActive(true);
@@ -396,7 +378,7 @@ export function SkinPanel({
               </div>
 
               <button
-                className="flex h-8 w-full items-center justify-center gap-1.5 rounded-[8px] border border-sky-100 bg-white text-[12px] font-semibold text-sky-700 transition hover:bg-sky-50 disabled:text-slate-300"
+                className="ui-button ui-button-secondary w-full"
                 type="button"
                 disabled={importing}
                 onClick={() => void importFromFolderPicker()}
@@ -406,14 +388,14 @@ export function SkinPanel({
               </button>
 
               {selectedAsset ? (
-                <div className="space-y-2 rounded-[8px] bg-emerald-50 px-2 py-1.5 text-[11px] text-emerald-700">
+                <div className="ui-notice space-y-2">
                   <div className="flex items-center gap-1.5">
                     <CheckCircle2 size={13} />
                     当前资源：{selectedAsset.name} · 短动作 {selectedAsset.shortActionKeys.length} 个
                   </div>
                   <div className="flex items-center gap-2">
                     <button
-                      className="h-7 rounded-[8px] border border-rose-100 bg-white px-2 text-[11px] font-semibold text-rose-500 disabled:text-slate-300"
+                      className="ui-button ui-button-secondary ui-button-small ui-button-danger"
                       type="button"
                       disabled={!canDeleteSelectedAsset || deletingAsset}
                       title={
@@ -439,18 +421,18 @@ export function SkinPanel({
                     ) : null}
                   </div>
                   {pendingDeleteAssetId === selectedAsset.id ? (
-                    <div className="rounded-[8px] border border-rose-100 bg-white px-2 py-2 text-rose-600">
+                    <div className="ui-notice ui-notice-danger">
                       <p>确认彻底删除「{selectedAsset.name}」素材包？会删除 public/assets/skins 下对应文件夹。</p>
                       <div className="mt-2 grid grid-cols-2 gap-2">
                         <button
-                          className="h-7 rounded-[8px] border border-rose-200 bg-rose-50 text-[11px] font-semibold text-rose-600"
+                          className="ui-button ui-button-secondary ui-button-danger"
                           type="button"
                           onClick={() => void removeSelectedAsset()}
                         >
                           确认删除
                         </button>
                         <button
-                          className="h-7 rounded-[8px] border border-sky-100 bg-white text-[11px] font-semibold text-slate-500"
+                          className="ui-button ui-button-secondary"
                           type="button"
                           onClick={() => setPendingDeleteAssetId(null)}
                         >
@@ -462,10 +444,10 @@ export function SkinPanel({
                 </div>
               ) : null}
 
-              {error ? <div className="rounded-[8px] bg-rose-50 px-2 py-1.5 text-[11px] text-rose-600">{error}</div> : null}
+              {error ? <div role="alert" className="ui-notice ui-notice-danger">{error}</div> : null}
 
               <button
-                className="h-8 w-full rounded-[8px] bg-blue-500 text-[12px] font-semibold text-white transition hover:bg-blue-600 disabled:bg-slate-300"
+                className="ui-button ui-button-primary w-full"
                 type="button"
                 disabled={saving}
                 onClick={() => void save()}
@@ -475,10 +457,11 @@ export function SkinPanel({
             </div>
           </div>
 
-          <div className="rounded-[8px] border border-dashed border-sky-200 bg-white/58 p-3 text-[11px] leading-relaxed text-slate-500">
-            <p className="font-semibold text-slate-600">序列帧资源要求</p>
+          <details className="ui-card ui-details character-requirements">
+            <summary>序列帧资源要求</summary>
+            <div className="ui-details-body ui-hint">
             <p className="mt-1">
-              必须包含 calm、sleeping、wake_up、yawn、sit、sit_down、happy、cheer_up、sad、angry、comfort、thinking、eat_food、run_left、run_right、fly_up、fall_down、dizzy、error，以及工具箱按钮 box。
+              必须包含 calm、sleeping、wake_up、yawn、sit、sit_down、happy、cheer_up、sad、angry、comfort、thinking、run_left、run_right、fly_up、fall_down、dizzy、error，以及工具箱按钮 box。
             </p>
             <p className="mt-1">
               直接拖入或选择角色资源文件夹即可，例如 rick_default。导入后会使用文件夹名作为资源目录名，只复制配置需要的 PNG 帧。
@@ -489,80 +472,70 @@ export function SkinPanel({
             <p className="mt-1">
               其他动作按配置帧数放图：大多数为 6 张，run_left / run_right 为 4 张，sit_down 为 4 张，fall_down 为 4 张，dizzy 为 2 张，box 为 1 张 box_0001.png。所有 PNG 尺寸需一致，并带透明通道。
             </p>
-          </div>
+            </div>
+          </details>
 
           <div className="space-y-2">
             {characters.map((profile) => (
-              <div key={profile.id} className="rounded-[8px] border border-sky-100 bg-white/72 p-3">
-                <div className="flex items-start justify-between gap-2">
+              <div key={profile.id} className="ui-card character-card">
+                <div className="character-card-heading">
                   <div className="min-w-0">
                     <div className="truncate text-[12px] font-semibold text-slate-800">
                       {profile.name}
-                      {profile.isActive ? <span className="ml-2 text-[10px] text-emerald-600">当前</span> : null}
+                      {profile.isActive ? <span className="ui-status ml-2">当前</span> : null}
                     </div>
                     <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-slate-500">
                       {profile.prompt || profile.description || "暂无 prompt"}
                     </p>
                   </div>
                   <div className="flex shrink-0 gap-1">
-                    <button className="h-7 rounded-[8px] border border-sky-100 bg-white px-2 text-[11px] font-semibold text-sky-700 disabled:text-slate-300" type="button" disabled={profile.isActive} onClick={() => void onSwitchCharacter(profile.id)}>
+                    <button className="ui-button ui-button-secondary ui-button-small" type="button" disabled={profile.isActive} onClick={() => void onSwitchCharacter(profile.id)}>
                       切换
                     </button>
-                    <button className="grid h-7 w-7 place-items-center rounded-[8px] border border-sky-100 bg-white text-sky-700" type="button" title="编辑" onClick={() => editProfile(profile)}>
+                    <button className="ui-icon-button ui-icon-button-small" type="button" title="编辑" aria-label={`编辑 ${profile.name}`} onClick={() => editProfile(profile)}>
                       <Pencil size={13} />
                     </button>
-                    <button className="grid h-7 w-7 place-items-center rounded-[8px] border border-rose-100 bg-white text-rose-500 disabled:text-slate-300" type="button" title="删除" disabled={characters.length <= 1} onClick={() => void remove(profile)}>
+                    <button className="ui-icon-button ui-icon-button-small ui-button-danger" type="button" title="删除" aria-label={`删除 ${profile.name}`} disabled={characters.length <= 1} onClick={() => void remove(profile)}>
                       <Trash2 size={13} />
                     </button>
                   </div>
                 </div>
-                <div className="mt-2 rounded-[8px] border border-sky-100 bg-white/55 px-2 py-2">
+                <div className="character-scale">
                   <div className="mb-1 flex items-center justify-between text-[11px]">
                     <span className="font-semibold text-slate-600">角色大小</span>
-                    <span className="font-semibold text-sky-700">
+                    <span className="ui-range-value">
                       {profile.isActive ? `${Math.round((profile.displayScale ?? 1) * 100)}%` : "切换后可调整"}
                     </span>
                   </div>
-                  <input
-                    className="h-2 w-full cursor-pointer accent-sky-500 disabled:cursor-not-allowed disabled:opacity-45"
-                    type="range"
+                  <RangeSlider
+                    label={`${profile.name} 的角色大小`}
+                    aria-valuetext={`${Math.round((profile.displayScale ?? 1) * 100)}%`}
                     min={MIN_CHARACTER_SCALE}
                     max={MAX_CHARACTER_SCALE}
                     step={CHARACTER_SCALE_STEP}
                     value={profile.displayScale ?? 1}
                     disabled={!profile.isActive}
                     onChange={(event) => updateScale(profile, Number(event.target.value))}
-                    onMouseUp={(event) => {
-                      if (!profile.isActive) return;
-                      const scale = Number((event.currentTarget as HTMLInputElement).value);
-                      void onUpdateCharacterScale(profile.id, scale).catch((err) => {
-                        setError(errorMessage(err, "角色大小保存失败"));
-                      });
-                    }}
-                    onTouchEnd={(event) => {
-                      if (!profile.isActive) return;
-                      const scale = Number((event.currentTarget as HTMLInputElement).value);
-                      void onUpdateCharacterScale(profile.id, scale).catch((err) => {
-                        setError(errorMessage(err, "角色大小保存失败"));
-                      });
-                    }}
+                    onPointerUp={() => scaleSaverRef.current?.flush(profile.id)}
+                    onKeyUp={() => scaleSaverRef.current?.flush(profile.id)}
+                    onBlur={() => scaleSaverRef.current?.flush(profile.id)}
                   />
                 </div>
                 {pendingDeleteId === profile.id ? (
-                  <div className="mt-2 rounded-[8px] border border-rose-100 bg-rose-50 px-2 py-2">
+                  <div className="ui-notice ui-notice-danger mt-2">
                     <p className="text-[11px] leading-relaxed text-rose-600">
                       确认删除「{profile.name}」？聊天记录和记忆也会一起删除。
                     </p>
                     <div className="mt-2 grid grid-cols-2 gap-2">
                       <button
-                        className="h-7 rounded-[8px] border border-rose-200 bg-white text-[11px] font-semibold text-rose-600"
+                        className="ui-button ui-button-secondary ui-button-danger"
                         type="button"
                         onClick={() => void remove(profile)}
                       >
                         确认删除
                       </button>
                       <button
-                        className="h-7 rounded-[8px] border border-sky-100 bg-white text-[11px] font-semibold text-slate-500"
+                        className="ui-button ui-button-secondary"
                         type="button"
                         onClick={() => setPendingDeleteId(null)}
                       >

@@ -1,15 +1,18 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { BoxButton } from "../components/BoxButton";
 import { ChatPanel } from "../components/ChatPanel";
-import { FeedPanel } from "../components/FeedPanel";
 import { MemoryPanel } from "../components/MemoryPanel";
 import { PetSprite } from "../components/PetSprite";
 import { SettingsPanel } from "../components/SettingsPanel";
 import { SkinPanel } from "../components/SkinPanel";
-import { StatsPanel } from "../components/StatsPanel";
 import { ThemePanel } from "../components/ThemePanel";
+import { HelpPanel, type HelpTopic } from "../components/HelpPanel";
+import type { ActivePanel } from "../types/domain";
+import { WelcomePanel } from "../components/WelcomePanel";
+import { hasCompletedOnboarding, completeOnboarding } from "../systems/settings/onboarding";
 import { ToolboxPopover } from "../components/ToolboxPopover";
 import { useClickThrough } from "../hooks/useClickThrough";
 import { useAppStore } from "../stores/useAppStore";
@@ -27,25 +30,17 @@ export function App() {
     createCharacter,
     currentState,
     dataPaths,
-    deleteChatSession,
     deleteChatHistoryDay,
     deleteCharacter,
     deleteFrameAsset,
     endDrag,
-    feed,
-    foods,
     frameAssets,
     loading,
     messages,
     openDataDir,
-    openPanel,
-    replaceFood,
-    resetStats,
-    saveSettings,
+    openPanel: openStorePanel,
     sessions,
-    settings,
     startDrag,
-    stats,
     tickAnimation,
     tickMovement,
     updateDrag,
@@ -61,11 +56,55 @@ export function App() {
     toolboxVisible,
     showToolbox,
     lullToSleep,
+    initScreenInfo,
   } = useAppStore();
+
+  const [helpTopic, setHelpTopic] = useState<HelpTopic>("start");
+  const openPanel = useCallback((panel: ActivePanel) => {
+    if (panel === "help") setHelpTopic("start");
+    openStorePanel(panel);
+  }, [openStorePanel]);
+
+  useEffect(() => {
+    if (activePanel !== "help") setHelpTopic("start");
+  }, [activePanel]);
 
   useEffect(() => {
     void bootstrap();
   }, [bootstrap]);
+
+  useEffect(() => {
+    if (!window.__TAURI_INTERNALS__) return;
+    let refreshing = false;
+    let disposed = false;
+    const refresh = async () => {
+      if (refreshing || disposed || document.hidden) return;
+      refreshing = true;
+      try {
+        await invoke("set_window_to_screen_size");
+        if (!disposed) await initScreenInfo();
+      } catch { /* A monitor may briefly disappear during display reconfiguration. */ }
+      finally { refreshing = false; }
+    };
+    const timer = window.setInterval(() => void refresh(), 5000);
+    window.addEventListener("focus", refresh);
+    window.addEventListener("resize", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => { disposed = true; window.clearInterval(timer); window.removeEventListener("focus", refresh); window.removeEventListener("resize", refresh); document.removeEventListener("visibilitychange", refresh); };
+  }, [initScreenInfo]);
+
+  const onboardingChecked = useRef(false);
+  useEffect(() => {
+    if (loading || !character || onboardingChecked.current) return;
+    onboardingChecked.current = true;
+    if (!hasCompletedOnboarding()) openPanel("welcome");
+  }, [loading, character, openPanel]);
+
+  function finishWelcome(destination?: "settings" | "help"): void {
+    completeOnboarding();
+    if (destination) openPanel(destination);
+    else closePanel();
+  }
 
   useEffect(() => {
     applyTheme(readActiveTheme());
@@ -80,19 +119,19 @@ export function App() {
 
     void appWindow.onFocusChanged(({ payload: focused }) => {
       if (focused) {
-        void appWindow.setSkipTaskbar(true);
+        void appWindow.setSkipTaskbar(true).catch(() => {});
       }
     }).then((handler) => {
       if (disposed) {
-        handler();
+        return handler();
       } else {
         unlisten = handler;
       }
-    });
+    }).catch(() => {});
 
     return () => {
       disposed = true;
-      unlisten?.();
+      void Promise.resolve().then(() => unlisten?.()).catch(() => {});
     };
   }, []);
 
@@ -102,14 +141,14 @@ export function App() {
 
     const unlisten = listen("tray-show-toolbox", () => {
       showToolbox();
-    });
+    }).catch(() => () => {});
     const unlistenSleep = listen("tray-lull-to-sleep", () => {
       lullToSleep();
-    });
+    }).catch(() => () => {});
 
     return () => {
-      unlisten.then((fn) => fn());
-      unlistenSleep.then((fn) => fn());
+      void unlisten.then((fn) => fn()).catch(() => {});
+      void unlistenSleep.then((fn) => fn()).catch(() => {});
     };
   }, [lullToSleep, showToolbox]);
 
@@ -160,6 +199,7 @@ export function App() {
         skinId={character?.skinId ?? "rick_default"}
         frameAssetsPath={character?.frameAssetsPath ?? null}
         displayScale={character?.displayScale ?? 1}
+        size={body.width}
         position={{ x: body.x, y: body.y }}
         onDragStart={handleDragStart}
         onDrag={handleDrag}
@@ -179,17 +219,7 @@ export function App() {
         </div>
       ) : null}
 
-      {activePanel === "stats" ? <StatsPanel stats={stats} characterName={character?.name} onClose={closePanel} /> : null}
       {activePanel === "chat" ? <ChatPanel character={character} messages={messages} onClose={closePanel} /> : null}
-      {activePanel === "feed" ? (
-        <FeedPanel
-          foods={foods}
-          stats={stats}
-          onFeed={feed}
-          onReplaceFood={replaceFood}
-          onClose={closePanel}
-        />
-      ) : null}
       {activePanel === "skin" ? (
         <SkinPanel
           character={character}
@@ -207,15 +237,17 @@ export function App() {
           onClose={closePanel}
         />
       ) : null}
-      {activePanel === "settings" ? (
+      {activePanel === "help" ? <HelpPanel key={helpTopic} initialTopic={helpTopic} onClose={closePanel} onSettings={() => openPanel("settings")} onWelcome={() => openPanel("welcome")} /> : null}
+      {activePanel === "welcome" ? <WelcomePanel onFinish={() => finishWelcome()} onConfigure={() => finishWelcome("settings")} onGuide={() => finishWelcome("help")} /> : null}
+      {activePanel === "settings" || activePanel === "help" ? (
+        <div hidden={activePanel !== "settings"}>
         <SettingsPanel
-          settings={settings}
           dataPaths={dataPaths}
-          onSave={saveSettings}
-          onResetStats={resetStats}
           onOpenDataDir={openDataDir}
           onClose={closePanel}
+          onOpenGuide={() => { setHelpTopic("deepseek"); openStorePanel("help"); }}
         />
+        </div>
       ) : null}
       {activePanel === "theme" ? <ThemePanel onClose={closePanel} /> : null}
       {activePanel === "memory" ? (
@@ -224,7 +256,6 @@ export function App() {
           characters={characters}
           sessions={sessions}
           messages={messages}
-          onDeleteSession={deleteChatSession}
           onDeleteHistoryDay={deleteChatHistoryDay}
           onSwitchCharacter={switchCharacter}
           onManageCharacters={() => openPanel("skin")}

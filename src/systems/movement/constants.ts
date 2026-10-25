@@ -5,8 +5,8 @@ export const WALK_SPEED = 54; // pixels/s (FRAME_RATE * 6 from WindowPet)
 export const PET_WIDTH = 152; // sprite display width in px
 export const PET_HEIGHT = 152; // sprite display height in px
 
-// Throw tween (from WindowPet: TWEEN_ACCELERATION = FRAME_RATE * 1.1 = 9.9)
-export const TWEEN_ACCELERATION = 9.9;
+// Project sampled pixel/second velocity into a short, screen-clamped throw.
+export const THROW_PROJECTION_SECONDS = 0.18;
 export const THROW_DURATION = 600; // ms
 
 // Behavior timing
@@ -38,9 +38,3 @@ export const SIT_KEY = "sit";
 export const SIT_DOWN_KEY = "sit_down";
 export const SLEEPING_KEY = "sleeping";
 export const WAKE_UP_KEY = "wake_up";
-
-// AI request abort tracking
-export const RAPID_CLICK_THRESHOLD = 5; // clicks
-export const RAPID_CLICK_WINDOW_MS = 10 * 1000; // 10 seconds
-export const RAPID_CANCEL_THRESHOLD = 3; // cancels
-export const RAPID_CANCEL_WINDOW_MS = 30 * 1000; // 30 seconds

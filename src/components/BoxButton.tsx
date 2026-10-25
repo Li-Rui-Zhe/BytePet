@@ -113,6 +113,13 @@ export function BoxButton() {
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
+      onKeyDown={event => {
+        if (event.repeat) return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          toggleBox();
+        }
+      }}
       aria-label={boxOpen ? "收起工具箱" : "展开工具箱"}
       title={boxOpen ? "收起工具箱" : "展开工具箱"}
     >

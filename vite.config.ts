@@ -9,7 +9,7 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 1420,
     watch: {
-      ignored: ["**/src-tauri/**"]
+      ignored: ["**/src-tauri/**", "**/data/**", "**/.codex/**", "**/.edge-profile/**", "**/edge-headless-profile*/**"]
     }
   },
   test: {

@@ -103,7 +103,11 @@ export function createBody(x: number, y: number, width: number, height: number):
   };
 }
 
-export function createBounds(screenWidth: number, screenHeight: number, taskbarHeight: number): WorldBounds {
+export function createBounds(screenWidth: number, screenHeight: number, taskbarHeight: number, workArea?: WorldBounds): WorldBounds {
+  if (workArea && Object.values(workArea).every(Number.isFinite)) {
+    const area = { left: Math.max(0, workArea.left), top: Math.max(0, workArea.top), right: Math.min(screenWidth, workArea.right), bottom: Math.min(screenHeight, workArea.bottom) };
+    if (area.right > area.left && area.bottom > area.top) return area;
+  }
   const workAreaBottom = screenHeight - taskbarHeight;
 
   return {

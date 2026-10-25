@@ -1,6 +1,6 @@
 {
   "source": "Rick_AI桌宠_PNG帧动画状态机_生产级.xlsx",
-  "count": 19,
+  "count": 18,
   "states": [
     {
       "layer": "L1",
@@ -277,29 +277,6 @@
       "assetPath": "assets/skins/{skinId}/thinking/thinking_0001.png…thinking_0006.png",
       "missingResourceFallback": "calm",
       "notes": "循环播放直到 AI 回复完成、失败或中断。"
-    },
-    {
-      "layer": "L3",
-      "key": "eat_food",
-      "name": "吃东西",
-      "category": "Interaction",
-      "frames": 6,
-      "fps": 6,
-      "loop": false,
-      "priority": 45,
-      "triggerType": "Feed",
-      "trigger": "用户投喂食物",
-      "guard": "",
-      "durationMs": 1300,
-      "interruptible": true,
-      "locked": false,
-      "fallback": "calm",
-      "promptEnabled": false,
-      "promptMood": "",
-      "signalLight": "",
-      "assetPath": "assets/skins/{skinId}/eat_food/eat_food_0001.png…eat_food_0006.png",
-      "missingResourceFallback": "calm",
-      "notes": "播放 1 次后回 calm。"
     },
     {
       "layer": "L4",

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { resolveFrameUrl, resolveFrameUrlForKey, FALLBACK_FRAME_URL } from "../systems/animation/frameResolver";
+import { recordDragSample, releaseVelocity, type DragSample } from "../systems/physics/dragVelocity";
 import type { RuntimeAnimationState } from "../systems/stateMachine/types";
 
 interface PetSpriteProps {
@@ -7,6 +8,7 @@ interface PetSpriteProps {
   skinId: string;
   frameAssetsPath?: string | null;
   displayScale?: number;
+  size?: number;
   position: { x: number; y: number };
   onDragStart: (offsetX: number, offsetY: number) => void;
   onDrag: (x: number, y: number) => void;
@@ -18,6 +20,7 @@ export function PetSprite({
   skinId,
   frameAssetsPath,
   displayScale = 1,
+  size,
   position,
   onDragStart,
   onDrag,
@@ -28,13 +31,18 @@ export function PetSprite({
   const definition = currentState.definition;
   const draggingRef = useRef(false);
   const dragOffsetRef = useRef({ x: 0, y: 0 });
-  const lastMouseRef = useRef({ x: 0, y: 0, time: 0 });
+  const samplesRef = useRef<DragSample[]>([]);
+  const pointerRef = useRef<number | null>(null);
+  const onDragEndRef = useRef(onDragEnd);
+  onDragEndRef.current = onDragEnd;
   const containerRef = useRef<HTMLDivElement>(null);
   const failedFrameUrlsRef = useRef(new Set<string>());
   const safeDisplayScale = Math.min(3, Math.max(0.75, Number.isFinite(displayScale) ? displayScale : 1));
-  const visualSize = Math.round(PET_DISPLAY_SIZE * safeDisplayScale);
-  const visualOffsetX = Math.round((visualSize - PET_DISPLAY_SIZE) / 2);
-  const visualOffsetY = PET_DISPLAY_SIZE - visualSize;
+  const visualSize = size && Number.isFinite(size) ? Math.max(1, size) : Math.round(PET_DISPLAY_SIZE * safeDisplayScale);
+
+  useEffect(() => () => {
+    if (draggingRef.current) { draggingRef.current = false; onDragEndRef.current(0, 0); }
+  }, []);
 
   const resolveCurrentCharacterCalmUrl = (index: number) =>
     resolveFrameUrlForKey({
@@ -104,47 +112,30 @@ export function PetSprite({
     setImgSrc(getDisplayFrameUrl(url, frameIndex));
   }, [definition, skinId, frameAssetsPath, frameIndex]);
 
-  function handleMouseDown(event: React.MouseEvent<HTMLDivElement>): void {
-    if (event.button !== 0 && event.button !== 2) return;
+  function handlePointerDown(event: React.PointerEvent<HTMLDivElement>): void {
+    if (event.button !== 0 && event.button !== 2 || draggingRef.current) return;
     event.preventDefault();
-
-    const rect = containerRef.current?.getBoundingClientRect();
-    if (!rect) return;
-
-    const offsetX = event.clientX - position.x;
-    const offsetY = event.clientY - position.y;
-
-    dragOffsetRef.current = { x: offsetX, y: offsetY };
-    lastMouseRef.current = { x: event.clientX, y: event.clientY, time: Date.now() };
+    dragOffsetRef.current = { x: event.clientX - position.x, y: event.clientY - position.y };
+    samplesRef.current = [{ x: event.clientX, y: event.clientY, time: performance.now() }];
+    pointerRef.current = event.pointerId;
     draggingRef.current = true;
-    onDragStart(offsetX, offsetY);
+    event.currentTarget.setPointerCapture(event.pointerId);
+    onDragStart(dragOffsetRef.current.x, dragOffsetRef.current.y);
+  }
 
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!draggingRef.current) return;
+  function handlePointerMove(event: React.PointerEvent<HTMLDivElement>): void {
+    if (!draggingRef.current || pointerRef.current !== event.pointerId) return;
+    samplesRef.current = recordDragSample(samplesRef.current, { x: event.clientX, y: event.clientY, time: performance.now() });
+    onDrag(event.clientX - dragOffsetRef.current.x, event.clientY - dragOffsetRef.current.y);
+  }
 
-      const newX = e.clientX - dragOffsetRef.current.x;
-      const newY = e.clientY - dragOffsetRef.current.y;
-
-      lastMouseRef.current = { x: e.clientX, y: e.clientY, time: Date.now() };
-      onDrag(newX, newY);
-    };
-
-    const handleMouseUp = (e: MouseEvent) => {
-      draggingRef.current = false;
-      window.removeEventListener("mousemove", handleMouseMove);
-      window.removeEventListener("mouseup", handleMouseUp);
-
-      // Calculate release velocity
-      const elapsed = Date.now() - lastMouseRef.current.time;
-      const dt = Math.max(elapsed, 1);
-      const velocityX = (e.clientX - lastMouseRef.current.x) / dt * 1000;
-      const velocityY = (e.clientY - lastMouseRef.current.y) / dt * 1000;
-
-      onDragEnd(velocityX, velocityY);
-    };
-
-    window.addEventListener("mousemove", handleMouseMove);
-    window.addEventListener("mouseup", handleMouseUp);
+  function finishPointer(event: React.PointerEvent<HTMLDivElement>, cancelled = false): void {
+    if (!draggingRef.current || pointerRef.current !== event.pointerId) return;
+    draggingRef.current = false;
+    pointerRef.current = null;
+    const velocity = cancelled ? { x: 0, y: 0 } : releaseVelocity(samplesRef.current, { x: event.clientX, y: event.clientY, time: performance.now() });
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    onDragEndRef.current(velocity.x, velocity.y);
   }
 
   // 不做 CSS 翻转，方向由 run_left/run_right 动画文件夹决定
@@ -155,23 +146,28 @@ export function PetSprite({
       ref={containerRef}
       className="pet-sprite-area pointer-events-auto absolute z-10 flex flex-col items-center overflow-visible"
       style={{
-        left: `${position.x - PET_DISPLAY_SIZE / 2}px`,
+        left: `${position.x - visualSize / 2}px`,
         top: `${position.y}px`,
-        width: `${PET_DISPLAY_SIZE}px`,
-        height: `${PET_DISPLAY_SIZE}px`,
+        width: `${visualSize}px`,
+        height: `${visualSize}px`,
       }}
       data-interactive="true"
     >
       <div
         className="absolute cursor-grab bg-white/[0.001] active:cursor-grabbing"
         style={{
-          left: `${-visualOffsetX}px`,
-          top: `${visualOffsetY}px`,
+          left: 0,
+          top: 0,
+          touchAction: "none",
           width: `${visualSize}px`,
           height: `${visualSize}px`,
           transform: flipStyle,
         }}
-        onMouseDown={handleMouseDown}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={(event) => finishPointer(event)}
+        onPointerCancel={(event) => finishPointer(event, true)}
+        onLostPointerCapture={(event) => finishPointer(event, true)}
         onContextMenu={(event) => event.preventDefault()}
         data-interactive="true"
       >

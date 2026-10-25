@@ -174,11 +174,14 @@ export function getPanelLayout(boxPosition: Point | null, viewport: Size, custom
   const baseHeight = clampValue(customSize?.height ?? PANEL_HEIGHT, 286, viewport.height - BOX_SAFE_MARGIN * 2);
 
   if (!boxPosition) {
-    return {
+    const rect = clampFloatingRect({
       x: viewport.width - baseWidth - BOX_SAFE_MARGIN,
       y: viewport.height - baseHeight - BOX_BUTTON_SIZE - BOX_SAFE_MARGIN - FLOATING_GAP,
       width: baseWidth,
       height: baseHeight,
+    }, viewport);
+    return {
+      ...rect,
       placement: "top",
     };
   }

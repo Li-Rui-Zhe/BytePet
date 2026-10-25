@@ -1,19 +1,28 @@
 mod ai;
 mod commands;
+mod credentials;
 mod database;
+mod desktop_geometry;
+mod help;
 mod resources;
 
-use serde::Serialize;
+use desktop_geometry::{overlay_layout, PhysicalRect, ScreenInfo};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::tray::TrayIconBuilder;
+#[cfg(not(target_os = "macos"))]
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::{include_image, Emitter, Manager};
 
-#[derive(Serialize, Clone)]
-struct ScreenInfo {
-    screen_width: f64,
-    screen_height: f64,
-    taskbar_height: f64,
-    scale_factor: f64,
+fn restore_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_ignore_cursor_events(false);
+        let _ = window.unminimize();
+        let _ = window.show();
+        #[cfg(not(target_os = "macos"))]
+        let _ = window.set_skip_taskbar(true);
+        let _ = window.set_focus();
+        let _ = app.emit("cursor-state-reset", ());
+    }
 }
 
 #[tauri::command]
@@ -48,6 +57,10 @@ fn get_mouse_pos(app: tauri::AppHandle, window: tauri::Window) -> Result<(f64, f
 
 #[tauri::command]
 fn get_screen_info(app: tauri::AppHandle) -> Result<ScreenInfo, String> {
+    primary_overlay(&app).map(|(_, info)| info)
+}
+
+fn primary_overlay(app: &tauri::AppHandle) -> Result<(PhysicalRect, ScreenInfo), String> {
     let monitor = app
         .primary_monitor()
         .map_err(|e| e.to_string())?
@@ -57,36 +70,41 @@ fn get_screen_info(app: tauri::AppHandle) -> Result<ScreenInfo, String> {
     let size = monitor.size();
     let work_area = monitor.work_area();
 
-    let screen_width = size.width as f64 / scale_factor;
-    let screen_height = size.height as f64 / scale_factor;
-    let work_height = work_area.size.height as f64 / scale_factor;
-    let taskbar_height = screen_height - work_height;
-
-    Ok(ScreenInfo {
-        screen_width,
-        screen_height,
-        taskbar_height,
+    let position = monitor.position();
+    overlay_layout(
+        PhysicalRect {
+            x: position.x,
+            y: position.y,
+            width: size.width,
+            height: size.height,
+        },
+        PhysicalRect {
+            x: work_area.position.x,
+            y: work_area.position.y,
+            width: work_area.size.width,
+            height: work_area.size.height,
+        },
         scale_factor,
-    })
+        cfg!(target_os = "macos"),
+    )
 }
 
 #[tauri::command]
 fn set_window_to_screen_size(app: tauri::AppHandle) -> Result<(), String> {
-    let monitor = app
-        .primary_monitor()
-        .map_err(|e| e.to_string())?
-        .ok_or("No primary monitor found".to_string())?;
+    sync_overlay(&app)
+}
 
-    let size = monitor.size();
-    let position = monitor.position();
-
+fn sync_overlay(app: &tauri::AppHandle) -> Result<(), String> {
+    let (area, _) = primary_overlay(app)?;
     if let Some(window) = app.get_webview_window("main") {
-        window
-            .set_size(tauri::PhysicalSize::new(size.width, size.height))
-            .map_err(|e| e.to_string())?;
-        window
-            .set_position(tauri::PhysicalPosition::new(position.x, position.y))
-            .map_err(|e| e.to_string())?;
+        let size = tauri::PhysicalSize::new(area.width, area.height);
+        let position = tauri::PhysicalPosition::new(area.x, area.y);
+        if window.inner_size().map_err(|e| e.to_string())? != size {
+            window.set_size(size).map_err(|e| e.to_string())?;
+        }
+        if window.inner_position().map_err(|e| e.to_string())? != position {
+            window.set_position(position).map_err(|e| e.to_string())?;
+        }
         Ok(())
     } else {
         Err("Main window not found".to_string())
@@ -96,26 +114,23 @@ fn set_window_to_screen_size(app: tauri::AppHandle) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             database::bootstrap(app.handle())
                 .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
 
-            // Set window to cover the primary monitor
-            let handle = app.handle().clone();
-            if let Ok(Some(monitor)) = handle.primary_monitor() {
-                let size = monitor.size();
-                let position = monitor.position();
-                if let Some(window) = handle.get_webview_window("main") {
-                    let _ = window.set_size(tauri::PhysicalSize::new(size.width, size.height));
-                    let _ =
-                        window.set_position(tauri::PhysicalPosition::new(position.x, position.y));
-                }
-            }
+            sync_overlay(app.handle()).map_err(Box::<dyn std::error::Error>::from)?;
 
             // System tray
             let show_item = MenuItemBuilder::with_id("show-toolbox", "显示工具箱").build(app)?;
             let lull_sleep_item = MenuItemBuilder::with_id("lull-to-sleep", "哄睡").build(app)?;
+            let hide_label = if cfg!(target_os = "macos") {
+                "隐藏桌宠（菜单栏可恢复）"
+            } else {
+                "最小化到任务栏"
+            };
             let minimize_item =
-                MenuItemBuilder::with_id("minimize-to-taskbar", "最小化到任务栏").build(app)?;
+                MenuItemBuilder::with_id("minimize-to-taskbar", hide_label).build(app)?;
             let quit_item = MenuItemBuilder::with_id("quit", "退出").build(app)?;
 
             let menu = MenuBuilder::new(app)
@@ -129,10 +144,13 @@ pub fn run() {
 
             let _tray = TrayIconBuilder::new()
                 .icon(include_image!("icons/32x32.png"))
+                .icon_as_template(cfg!(target_os = "macos"))
+                .show_menu_on_left_click(cfg!(target_os = "macos"))
                 .menu(&menu)
                 .tooltip("BytePet")
                 .on_menu_event(move |app, event| match event.id().as_ref() {
                     "show-toolbox" => {
+                        restore_main_window(app);
                         let _ = app.emit("tray-show-toolbox", ());
                     }
                     "lull-to-sleep" => {
@@ -140,8 +158,13 @@ pub fn run() {
                     }
                     "minimize-to-taskbar" => {
                         if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.set_skip_taskbar(false);
-                            let _ = window.minimize();
+                            #[cfg(target_os = "macos")]
+                            let _ = window.hide();
+                            #[cfg(not(target_os = "macos"))]
+                            {
+                                let _ = window.set_skip_taskbar(false);
+                                let _ = window.minimize();
+                            }
                         }
                     }
                     "quit" => {
@@ -150,12 +173,16 @@ pub fn run() {
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
+                    #[cfg(target_os = "macos")]
+                    let _ = (tray, event);
+                    #[cfg(not(target_os = "macos"))]
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
                         ..
                     } = event
                     {
+                        restore_main_window(tray.app_handle());
                         let _ = tray.app_handle().emit("tray-show-toolbox", ());
                     }
                 })
@@ -164,15 +191,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            help::open_deepseek_help_link,
             commands::bootstrap_app,
-            commands::send_chat_message,
-            commands::feed_food,
-            commands::replace_food,
-            commands::reorder_foods,
-            commands::record_pet_interaction,
-            commands::save_settings,
-            commands::reset_stats,
-            commands::validate_skin_path,
             commands::list_frame_assets,
             commands::choose_and_import_frame_asset,
             commands::import_frame_asset_from_path,
@@ -182,25 +202,31 @@ pub fn run() {
             commands::update_character_scale,
             commands::switch_character,
             commands::delete_character,
-            commands::delete_chat_session,
             commands::chat_history_days,
             commands::chat_history_messages_for_day,
             commands::delete_chat_history_day,
             commands::open_data_dir,
             commands::get_ai_config_public,
             commands::save_ai_provider_config,
-            commands::delete_ai_provider_api_key,
-            commands::delete_ai_provider_config,
+            commands::delete_ai_connection,
             commands::set_active_ai_provider,
             commands::test_ai_connection,
             commands::stream_ai_message,
             commands::abort_ai_request,
-            commands::save_interrupted_ai_message,
             set_ignore_cursor_events,
             get_mouse_pos,
             get_screen_info,
             set_window_to_screen_size
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running BytePet");
+        .build(tauri::generate_context!())
+        .expect("error while building BytePet")
+        .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                restore_main_window(app);
+                let _ = app.emit("tray-show-toolbox", ());
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
+        });
 }

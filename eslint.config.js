@@ -4,12 +4,12 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    ignores: ["dist", "src-tauri/target", "node_modules"]
+    ignores: ["dist", "src-tauri/target", "node_modules", "data/**", ".codex/**", ".edge-profile/**", "edge-headless-profile*/**"]
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ["src/**/*.{ts,tsx}", "vite.config.ts"],
+    files: ["src/**/*.{ts,tsx}", "scripts/**/*.mjs", "vite.config.ts"],
     languageOptions: {
       ecmaVersion: 2022,
       globals: {

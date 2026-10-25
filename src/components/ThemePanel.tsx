@@ -55,17 +55,9 @@ function ThemeCard({
   return (
     <div
       className={`theme-card ${active ? "active" : ""}`}
-      onClick={onApply}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onApply();
-        }
-      }}
-      role="button"
-      tabIndex={0}
-      title={theme.name}
+      data-removable={removable}
     >
+      <button className="theme-choice" type="button" onClick={onApply} aria-pressed={active} title={theme.name}>
       <span className="theme-card-top">
         <span className="theme-card-name">{theme.name}</span>
         {active ? <Check size={13} /> : null}
@@ -75,6 +67,7 @@ function ThemeCard({
           <span key={`${theme.id}-${index}`} className="theme-swatch" style={{ background: color }} />
         ))}
       </span>
+      </button>
       {removable ? (
         <button
           className="theme-delete"
@@ -155,8 +148,8 @@ export function ThemePanel({ onClose }: ThemePanelProps) {
   }
 
   return (
-    <PanelShell title="主题颜色" subtitle="选择一套颜色，或自己搭配" onClose={onClose}>
-      <div className="h-full min-h-0 overflow-y-auto pr-1">
+    <PanelShell title="主题颜色" subtitle="选择一套颜色，或自己搭配" preferredSize={{ width: 380, height: 560 }} className="theme-shell" onClose={onClose}>
+      <div className="panel-scroll ui-scroll">
         <div className="space-y-3 pb-2">
           <section>
             <h3 className="theme-section-title">系统主题</h3>
@@ -172,7 +165,7 @@ export function ThemePanel({ onClose }: ThemePanelProps) {
             </div>
           </section>
 
-          <section className="theme-custom-box">
+          <section className="ui-card theme-custom-box">
             <div className="flex items-center justify-between gap-2">
               <h3 className="theme-section-title">自定义颜色</h3>
               <span className="text-[10px]" style={{ color: "var(--pet-muted-text)" }}>
@@ -185,6 +178,7 @@ export function ThemePanel({ onClose }: ThemePanelProps) {
                   <span>{field.label}</span>
                   <input
                     type="color"
+                    aria-label={`${field.label}颜色`}
                     value={colorInputValue(draft[field.key])}
                     onChange={(event) => updateDraft(field.key, event.target.value)}
                   />
@@ -192,13 +186,13 @@ export function ThemePanel({ onClose }: ThemePanelProps) {
               ))}
             </div>
             <div className="mt-2 grid grid-cols-2 gap-2">
-              <button className="theme-secondary-button" type="button" onClick={resetDefault}>
+              <button className="ui-button ui-button-secondary" type="button" onClick={resetDefault}>
                 <RotateCcw size={13} />
                 重置默认
               </button>
-              <button className="theme-primary-button" type="button" onClick={saveDraft}>
+              <button className="ui-button ui-button-primary" type="button" onClick={saveDraft}>
                 <Save size={13} />
-                保存为我的主题
+                保存主题
               </button>
             </div>
           </section>
@@ -219,7 +213,7 @@ export function ThemePanel({ onClose }: ThemePanelProps) {
                 ))}
               </div>
             ) : (
-              <div className="theme-empty">保存后会出现在这里。</div>
+              <div className="ui-empty">保存后会出现在这里。</div>
             )}
           </section>
         </div>

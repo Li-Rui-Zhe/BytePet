@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { Activity, Brain, MessageCircle, Palette, Settings, UserRoundPlus, Utensils } from "lucide-react";
+import { BookOpen, Brain, MessageCircle, Palette, Settings, UserRoundPlus } from "lucide-react";
 import type { ActivePanel } from "../types/domain";
 
 interface ActionBarProps {
@@ -11,19 +11,18 @@ interface ActionBarProps {
 
 const ACTIONS: Array<{ panel: ActivePanel; label: string; hint: string; icon: typeof MessageCircle }> = [
   { panel: "chat", label: "聊天", hint: "和当前人物聊天", icon: MessageCircle },
-  { panel: "feed", label: "喂食", hint: "给桌宠喂食", icon: Utensils },
   { panel: "memory", label: "记忆", hint: "历史聊天和人物存档", icon: Brain },
-  { panel: "stats", label: "状态", hint: "查看实时数据", icon: Activity },
   { panel: "skin", label: "人物", hint: "新建或管理人物", icon: UserRoundPlus },
   { panel: "theme", label: "主题", hint: "更改界面颜色", icon: Palette },
   { panel: "settings", label: "设置", hint: "AI 模型与系统偏好", icon: Settings },
+  { panel: "help", label: "指南", hint: "使用指南与轻量入门引导", icon: BookOpen },
 ];
 
 export function ActionBar({ activePanel, compact = false, hidePanels = [], onAction }: ActionBarProps) {
   const visibleActions = ACTIONS.filter((action) => !hidePanels.includes(action.panel));
 
   return (
-    <div className={clsx(compact ? "toolbox-nav compact" : "toolbox-nav")}>
+    <nav aria-label="功能导航" className={clsx(compact ? "toolbox-nav compact" : "toolbox-nav")}>
       {visibleActions.map((action) => {
         const Icon = action.icon;
         const active = activePanel === action.panel;
@@ -45,6 +44,6 @@ export function ActionBar({ activePanel, compact = false, hidePanels = [], onAct
           </button>
         );
       })}
-    </div>
+    </nav>
   );
 }

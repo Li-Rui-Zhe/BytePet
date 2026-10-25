@@ -45,7 +45,6 @@ export function validateSkinManifest(manifest: Partial<SkinManifest> | null): Sk
     "angry",
     "comfort",
     "thinking",
-    "eat_food",
     "run_left",
     "run_right",
     "fly_up",

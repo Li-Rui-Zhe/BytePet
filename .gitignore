@@ -5,6 +5,7 @@ node_modules/
 # Frontend build output
 dist/
 dist-ssr/
+artifacts/
 
 # Rust / Tauri build output
 target/
@@ -42,18 +43,40 @@ desktop.ini
 # Test / coverage
 coverage/
 .nyc_output/
+.edge-profile/
+edge-headless-profile*/
 
 # Local env / secrets
 .env
 .env.*
 !.env.example
+# Private keys and local credential exports (not a substitute for secret scanning)
+id_rsa*
+id_ed25519*
+id_ecdsa*
+id_dsa*
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+credentials.json
+secrets.json
 
 # Local app data / databases
+data/
 *.db
 *.sqlite
 *.sqlite3
 *.db-shm
 *.db-wal
+*.db-journal
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite-journal
+*.sqlite3-shm
+*.sqlite3-wal
+*.sqlite3-journal
 
 # Temporary files
 *.tmp

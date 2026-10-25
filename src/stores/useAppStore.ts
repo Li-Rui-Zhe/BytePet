@@ -2,21 +2,11 @@
 import { listen } from "@tauri-apps/api/event";
 import {
   bootstrapApp,
-  feedFood,
   openDataDir,
-  recordPetInteraction,
-  reorderFoods,
-  replaceFood,
-  resetStats,
-  saveSettings,
-  saveInterruptedAiMessage,
-  sendChatMessage,
-  validateSkinPath,
   streamAiMessage,
   abortAiRequest as abortAiRequestApi,
   chooseAndImportFrameAsset,
   createCharacter,
-  deleteChatSession,
   deleteChatHistoryDay,
   deleteCharacter,
   deleteFrameAsset as deleteFrameAssetApi,
@@ -29,23 +19,17 @@ import {
 import type {
   ActivePanel,
   AiChatEvent,
-  AppSettings,
   BootstrapPayload,
   ChatMessage,
   ChatSession,
   CharacterProfile,
   CreateCharacterRequest,
   DataPaths,
-  FeedResult,
-  FoodReplaceRequest,
-  FoodItem,
   FrameAssetOption,
-  PetStats,
   ScreenInfo,
-  SkinValidationReport,
   UpdateCharacterRequest
 } from "../types/domain";
-import { createRuntimeState, resolveExpiredState, transitionTo } from "../systems/stateMachine/runtime";
+import { createRuntimeState, resolveExpiredState } from "../systems/stateMachine/runtime";
 import type { RuntimeAnimationState } from "../systems/stateMachine/types";
 import {
   createBody,
@@ -65,7 +49,7 @@ import {
   PET_WIDTH,
   PET_HEIGHT,
   THROW_DURATION,
-  TWEEN_ACCELERATION,
+  THROW_PROJECTION_SECONDS,
   FALL_KEY,
   IDLE_KEY,
   YAWN_KEY,
@@ -79,6 +63,7 @@ import {
   SIT_DOWN_DURATION_MS,
 } from "../systems/movement/constants";
 import { invoke } from "@tauri-apps/api/core";
+import { clampPetPosition, petSize, resizePetBody } from "../systems/physics/petGeometry";
 
 type BehaviorFlow =
   | "idle5_yawn"
@@ -97,14 +82,11 @@ interface AppStoreState {
   dataPaths: DataPaths | null;
   character: CharacterProfile | null;
   characters: CharacterProfile[];
+  displayScaleOverrides: Record<string, number>;
   frameAssets: FrameAssetOption[];
-  stats: PetStats | null;
-  foods: FoodItem[];
-  settings: AppSettings | null;
   sessions: ChatSession[];
   messages: ChatMessage[];
   currentState: RuntimeAnimationState;
-  bubble: string | null;
 
   // Physics / movement
   screenInfo: ScreenInfo | null;
@@ -117,10 +99,13 @@ interface AppStoreState {
   // Chat / AI state (chatOpen + aiBusy dual lock)
   chatOpen: boolean;
   chatStreaming: boolean;
+  chatStopping: boolean;
   streamingContent: string;
   currentRequestId: string | null;
-  currentSessionId: string | null;
   pendingChatMessage: string | null;
+  chatDrafts: Record<string, string>;
+  setChatDraft: (characterId: string, text: string) => void;
+  cancelPendingChat: () => void;
 
   // Box button state
   boxPosition: { x: number; y: number } | null;
@@ -128,10 +113,6 @@ interface AppStoreState {
   toolboxVisible: boolean;
 
   // Interaction tracking
-  rapidClickCount: number;
-  rapidClickFirstAt: number;
-  rapidCancelCount: number;
-  rapidCancelFirstAt: number;
   lastInteractionAt: number;
   hasTriggered5MinIdle: boolean;
   hasTriggered10MinSleep: boolean;
@@ -141,25 +122,17 @@ interface AppStoreState {
   bootstrap: () => Promise<void>;
   openPanel: (panel: ActivePanel) => void;
   closePanel: () => void;
-  sendMessage: (content: string) => Promise<void>;
-  feed: (foodId: string) => Promise<FeedResult | null>;
-  replaceFood: (request: FoodReplaceRequest) => Promise<void>;
-  reorderFoods: (foodIds: string[]) => Promise<void>;
   createCharacter: (request: CreateCharacterRequest) => Promise<void>;
   updateCharacter: (request: UpdateCharacterRequest) => Promise<void>;
   previewCharacterScale: (characterId: string, displayScale: number) => void;
   updateCharacterScale: (characterId: string, displayScale: number) => Promise<void>;
   switchCharacter: (characterId: string) => Promise<void>;
   deleteCharacter: (characterId: string) => Promise<void>;
-  deleteChatSession: (sessionId: string) => Promise<void>;
   deleteChatHistoryDay: (dateKey: string) => Promise<void>;
   loadFrameAssets: () => Promise<void>;
   chooseAndImportFrameAsset: () => Promise<FrameAssetOption | null>;
   importFrameAssetFromPath: (path: string) => Promise<FrameAssetOption>;
   deleteFrameAsset: (assetId: string) => Promise<void>;
-  saveSettings: (settings: AppSettings) => Promise<void>;
-  resetStats: () => Promise<void>;
-  validateSkinPath: (path: string) => Promise<SkinValidationReport>;
   openDataDir: () => Promise<string>;
   tickAnimation: () => void;
 
@@ -179,11 +152,8 @@ interface AppStoreState {
   showToolbox: () => void;
 
   // AI chat actions (fully implemented in Task #14)
-  sendAiChat: (content: string) => Promise<void>;
+  sendAiChat: (content: string) => Promise<"sent" | "queued" | "rejected" | "failed">;
   abortAiRequest: () => Promise<void>;
-  trackRapidClick: () => void;
-  trackRapidCancel: () => void;
-  recordPetInteraction: () => Promise<void>;
   lullToSleep: () => void;
 }
 
@@ -192,10 +162,10 @@ let typewriterQueue = "";
 let streamDisplayBuffer = "";
 
 const CHAT_ACTIONS = new Set(["calm", "happy", "sad", "angry", "comfort", "cheer_up"]);
-const ACTIVE_ACTION_KEYS = new Set(["eat_food", "wake_up", "sleeping", "run_left", "run_right", "fall_down", "fly_up", "sit", "sit_down"]);
+const ACTIVE_ACTION_KEYS = new Set(["wake_up", "sleeping", "run_left", "run_right", "fall_down", "fly_up", "sit", "sit_down"]);
 const STREAM_ACTION_TAG_BUFFER_CHARS = 128;
 const PHYSICAL_STATE_KEYS = new Set([FALL_KEY, "dizzy", "fly_up"]);
-const INTERACTION_STATE_KEYS = new Set(["thinking", "eat_food", "happy", "sad", "angry", "comfort", "cheer_up", "error", WAKE_UP_KEY]);
+const INTERACTION_STATE_KEYS = new Set(["thinking", "happy", "sad", "angry", "comfort", "cheer_up", "error", WAKE_UP_KEY]);
 const DEFAULT_SHORT_ACTION_KEYS = ["action1", "action2"];
 
 function canonicalChatAction(action: string | undefined): string | null {
@@ -295,15 +265,6 @@ function interactionReset(now = Date.now()): Partial<AppStoreState> {
   };
 }
 
-function wakeFromSleepUpdates(now = Date.now()): Partial<AppStoreState> {
-  return {
-    ...interactionReset(now),
-    behaviorFlow: "waking",
-    sleepIntentQueued: false,
-    currentState: createRuntimeState(WAKE_UP_KEY, now),
-  };
-}
-
 function getCurrentFrameAsset(state: AppStoreState): FrameAssetOption | null {
   const currentSkinId = state.character?.skinId ?? "rick_default";
   const currentPath = state.character?.frameAssetsPath ?? null;
@@ -396,20 +357,37 @@ function enqueueVisibleStreamChunk(
   streamDisplayBuffer = flushVisibleStreamPrefix(set, streamDisplayBuffer);
 }
 
-function applyBootstrap(set: (partial: Partial<AppStoreState>) => void, payload: BootstrapPayload): void {
-  set({
-    loading: false,
-    dataPaths: payload.dataPaths,
-    character: payload.character,
-    characters: payload.characters,
-    stats: payload.stats,
-    foods: payload.foods,
-    settings: payload.settings,
-    sessions: payload.sessions,
-    messages: payload.messages,
-    error: null
+function applyBootstrap(set: (partial: Partial<AppStoreState> | ((state: AppStoreState) => Partial<AppStoreState>)) => void, payload: BootstrapPayload): void {
+  set((state) => {
+    // Local size choices stay authoritative for this session: other IPC calls
+    // can return snapshots captured before a preview or even before its save.
+    const withLocalScale = (character: CharacterProfile): CharacterProfile => ({
+      ...character,
+      displayScale: state.displayScaleOverrides[character.id] ?? character.displayScale,
+    });
+    const character = withLocalScale(payload.character);
+    const characters = payload.characters.map(withLocalScale);
+    const displayScaleOverrides = Object.fromEntries(
+      characters.filter(item => state.displayScaleOverrides[item.id] !== undefined)
+        .map(item => [item.id, state.displayScaleOverrides[item.id]])
+    );
+    return {
+      loading: false,
+      body: resizePetBody(state.body, state.bounds, character.displayScale),
+      dataPaths: payload.dataPaths,
+      character,
+      characters,
+      displayScaleOverrides,
+      sessions: payload.sessions,
+      messages: payload.messages,
+      error: null
+    };
   });
 }
+
+let chatRevision = 0;
+let stoppingPromise: Promise<void> | null = null;
+const scaleVersions = new Map<string, number>();
 
 // Default bounds before screen info is loaded
 const DEFAULT_BOUNDS: WorldBounds = createBounds(1920, 1080, 60);
@@ -421,14 +399,11 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   dataPaths: null,
   character: null,
   characters: [],
-  frameAssets: [{ id: "rick_default", name: "绯荤粺榛樿 Rick", path: null, builtIn: true, importedAt: null, shortActionKeys: DEFAULT_SHORT_ACTION_KEYS }],
-  stats: null,
-  foods: [],
-  settings: null,
+  displayScaleOverrides: {},
+  frameAssets: [{ id: "rick_default", name: "系统默认 Rick", path: null, builtIn: true, importedAt: null, shortActionKeys: DEFAULT_SHORT_ACTION_KEYS }],
   sessions: [],
   messages: [],
   currentState: createRuntimeState("calm"),
-  bubble: null,
 
   // Physics defaults: pet starts at top-center, falling
   screenInfo: null,
@@ -441,10 +416,13 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   // Chat / AI defaults
   chatOpen: false,
   chatStreaming: false,
+  chatStopping: false,
   streamingContent: "",
   currentRequestId: null,
-  currentSessionId: null,
   pendingChatMessage: null,
+  chatDrafts: {},
+  setChatDraft: (id, text) => set((state) => ({ chatDrafts: { ...state.chatDrafts, [id]: text } })),
+  cancelPendingChat: () => set({ pendingChatMessage: null }),
 
   // Box button defaults (null = will be positioned on first render)
   boxPosition: null,
@@ -452,10 +430,6 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   toolboxVisible: true,
 
   // Interaction tracking defaults
-  rapidClickCount: 0,
-  rapidClickFirstAt: 0,
-  rapidCancelCount: 0,
-  rapidCancelFirstAt: 0,
   lastInteractionAt: Date.now(),
   hasTriggered5MinIdle: false,
   hasTriggered10MinSleep: false,
@@ -472,13 +446,13 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
 
       // Read fresh bounds after initScreenInfo
       const freshBounds = get().bounds;
-      const startX = freshBounds.left + Math.random() * (freshBounds.right - freshBounds.left - PET_WIDTH) + PET_WIDTH / 2;
+      const size = petSize(get().character?.displayScale ?? 1, freshBounds);
+      const startX = freshBounds.left + Math.random() * (freshBounds.right - freshBounds.left - size) + size / 2;
       const startY = freshBounds.top;
 
       set({
         currentState: createRuntimeState("calm"),
-        bubble: "Rick 已上线",
-        body: createBody(startX, startY, PET_WIDTH, PET_HEIGHT),
+        body: createBody(startX, startY, size, size),
         movementState: createInitialMovementState(),
         onGround: false,
         ...interactionReset(),
@@ -493,8 +467,9 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   initScreenInfo: async () => {
     try {
       const info = await invoke<ScreenInfo>("get_screen_info");
-      const bounds = createBounds(info.screen_width, info.screen_height, info.taskbar_height);
-      set({ screenInfo: info, bounds });
+      const bounds = createBounds(info.screen_width, info.screen_height, info.taskbar_height, info.work_area);
+      if (JSON.stringify(info) === JSON.stringify(get().screenInfo)) return;
+      set((state) => ({ screenInfo: info, bounds, body: resizePetBody(state.body, bounds, state.character?.displayScale ?? 1) }));
     } catch {
       // Browser preview fallback
       const width = window.screen.width;
@@ -507,7 +482,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         scale_factor: window.devicePixelRatio || 1,
       };
       const bounds = createBounds(width, height, taskbarHeight);
-      set({ screenInfo: info, bounds });
+      set((state) => ({ screenInfo: info, bounds, body: resizePetBody(state.body, bounds, state.character?.displayScale ?? 1) }));
     }
   },
 
@@ -524,15 +499,14 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
 
       const newX = tween.startX + (tween.targetX - tween.startX) * ease;
       const newY = tween.startY + (tween.targetY - tween.startY) * ease;
+      const positioned = clampPetPosition(state.body, state.bounds, newX, newY);
 
       if (progress >= 1) {
         // Tween complete, enable physics for falling
         set({
           throwTween: null,
           body: {
-            ...state.body,
-            x: tween.targetX,
-            y: tween.targetY,
+            ...positioned,
             vx: 0,
             vy: 0,
             enabled: true,
@@ -546,7 +520,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       }
 
       set({
-        body: { ...state.body, x: newX, y: newY, enabled: false },
+        body: { ...positioned, enabled: false },
       });
       return;
     }
@@ -607,12 +581,6 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
           // dizzy durationMs=6000锛岀敱 tickAnimation 鑷姩鍒版湡 鈫?calm
           // dizzy 鍒版湡鍚庯紝tickMovement 浼氳嚜鍔ㄦ仮澶?walk
         }
-        // 落地后自动发送排队消息
-        if (cur.pendingChatMessage && cur.onGround) {
-          const msg = cur.pendingChatMessage;
-          set({ pendingChatMessage: null });
-          get().sendAiChat(msg).catch(() => {});
-        }
       }, 400); // fall_down 播放时间
     }
 
@@ -638,6 +606,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   startDrag: (_offsetX: number, _offsetY: number) => {
     set((state) => ({
       ...interactionReset(),
+      onGround: false,
       movementState: { ...state.movementState, type: "drag", animationKey: IDLE_KEY },
       throwTween: null,
       body: { ...state.body, enabled: false, vx: 0, vy: 0 },
@@ -649,32 +618,27 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
 
   updateDrag: (x: number, y: number) => {
     set((state) => ({
-      body: { ...state.body, x, y, enabled: false },
+      body: { ...clampPetPosition(state.body, state.bounds, x, y), enabled: false },
     }));
   },
 
   endDrag: (velocityX: number, velocityY: number) => {
     const state = get();
-    const body = state.body;
-
-    // Clamp throw to not go above screen top
-    const targetX = body.x + velocityX * TWEEN_ACCELERATION;
-    const targetY = Math.max(0, body.y + velocityY * TWEEN_ACCELERATION);
-
+    const body = clampPetPosition(state.body, state.bounds);
+    const vx = Number.isFinite(velocityX) ? velocityX : 0;
+    const vy = Number.isFinite(velocityY) ? velocityY : 0;
+    const thrown = Math.hypot(vx, vy) >= 80;
+    const target = clampPetPosition(body, state.bounds, body.x + vx * THROW_PROJECTION_SECONDS, body.y + vy * THROW_PROJECTION_SECONDS);
     set({
-      throwTween: {
-        startX: body.x,
-        startY: body.y,
-        targetX,
-        targetY,
-        startTime: Date.now(),
-      },
-      movementState: { ...state.movementState, type: "thrown" },
-      currentState: createRuntimeState("fly_up"),
+      ...interactionReset(),
+      onGround: false,
+      body: { ...body, enabled: !thrown, allowGravity: true, vx: 0, vy: 0 },
+      throwTween: thrown ? { startX: body.x, startY: body.y, targetX: target.x, targetY: target.y, startTime: Date.now() } : null,
+      movementState: { ...state.movementState, type: thrown ? "thrown" : "fall", animationKey: thrown ? "fly_up" : FALL_KEY },
+      currentState: createRuntimeState(thrown ? "fly_up" : FALL_KEY),
       behaviorFlow: null,
       sleepIntentQueued: false,
     });
-    void get().recordPetInteraction();
   },
 
   tickMovement: () => {
@@ -796,96 +760,25 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       : state.movementState,
   })),
 
-  sendMessage: async (content) => {
-    if (!content.trim()) {
-      return;
-    }
-
-    set(interactionReset());
-    const sessionId = get().sessions[0]?.id ?? null;
-    set((state) => ({ currentState: transitionTo(state.currentState, "thinking") }));
-
-    try {
-      const result = await sendChatMessage(content.trim(), sessionId);
-      set((state) => ({
-        sessions: state.sessions.some((session) => session.id === result.session.id) ? state.sessions : [result.session, ...state.sessions],
-        messages: [...state.messages, result.userMessage, result.assistantMessage],
-        stats: result.stats,
-        foods: result.foods,
-        currentState: createRuntimeState(result.triggeredStateKey)
-      }));
-    } catch (error) {
-      set({
-        error: error instanceof Error ? error.message : "聊天发送失败",
-        currentState: createRuntimeState("error"),
-        bubble: "AI 请求失败"
-      });
-    }
-  },
-
-  feed: async (foodId) => {
-    const wakingFromSleep = get().currentState.definition.key === SLEEPING_KEY || get().behaviorFlow === "waking";
-    if (wakingFromSleep) {
-      set((state) => ({
-        ...wakeFromSleepUpdates(),
-        movementState: { ...state.movementState, type: "idle", animationKey: WAKE_UP_KEY, idleTimer: 999999 },
-        body: { ...state.body, vx: 0 },
-      }));
-    } else {
-      set(interactionReset());
-    }
-
-    try {
-      const result = await feedFood(foodId);
-      // Map feed state keys to valid animation keys
-      const feedAnimMap: Record<string, string> = {
-        feed_neutral: "eat_food",
-        feed_blocked: "angry",
-      };
-      const animKey = feedAnimMap[result.triggeredStateKey] ?? "eat_food";
-      set((state) => ({
-        foods: state.foods.map((food) => (food.id === result.food.id ? result.food : food)),
-        stats: result.stats,
-        currentState: state.behaviorFlow === "waking" ? state.currentState : createRuntimeState(animKey),
-        bubble: result.message
-      }));
-      return result;
-    } catch (error) {
-      set((_state) => ({
-        error: error instanceof Error ? error.message : "投喂失败",
-        currentState: createRuntimeState("angry"),
-        bubble: "投喂失败"
-      }));
-      return null;
-    }
-  },
-
-  replaceFood: async (request) => {
-    const updated = await replaceFood(request);
-    set((state) => ({
-      foods: state.foods.map((food) => (food.id === updated.id ? updated : food)),
-      bubble: "Food slot updated",
-    }));
-  },
-
-  reorderFoods: async (foodIds) => {
-    const foods = await reorderFoods(foodIds);
-    set({ foods, bubble: "Food order saved" });
-  },
-
   createCharacter: async (request) => {
+    await get().abortAiRequest();
+    ++chatRevision;
+    set({ pendingChatMessage: null });
     applyBootstrap(set, await createCharacter(request));
-    set({ currentState: createRuntimeState("calm"), bubble: "人物已创建" });
+    set({ currentState: createRuntimeState("calm") });
   },
 
   updateCharacter: async (request) => {
     applyBootstrap(set, await updateCharacter(request));
-    set({ currentState: createRuntimeState("calm"), bubble: "人物已更新" });
+    set({ currentState: createRuntimeState("calm") });
   },
 
   previewCharacterScale: (characterId, displayScale) => {
+    scaleVersions.set(characterId, (scaleVersions.get(characterId) ?? 0) + 1);
     const scale = Math.min(3, Math.max(0.75, Number.isFinite(displayScale) ? displayScale : 1));
     set((state) => ({
+      displayScaleOverrides: { ...state.displayScaleOverrides, [characterId]: scale },
+      body: state.character?.id === characterId ? resizePetBody(state.body, state.bounds, scale) : state.body,
       character:
         state.character?.id === characterId
           ? { ...state.character, displayScale: scale }
@@ -898,38 +791,48 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
 
   updateCharacterScale: async (characterId, displayScale) => {
     const scale = Math.min(3, Math.max(0.75, Number.isFinite(displayScale) ? displayScale : 1));
-    applyBootstrap(set, await updateCharacterScaleApi(characterId, scale));
+    const version = scaleVersions.get(characterId) ?? 0;
+    try {
+      const payload = await updateCharacterScaleApi(characterId, scale);
+      if ((scaleVersions.get(characterId) ?? 0) !== version) return;
+      const latestScale = get().displayScaleOverrides[characterId];
+      // A queued older save may only start after a newer preview already exists.
+      if (latestScale !== undefined && latestScale !== scale) return;
+      const saved = payload.characters.find(item => item.id === characterId);
+      if (!saved) return;
+      set((state) => ({
+        displayScaleOverrides: { ...state.displayScaleOverrides, [characterId]: saved.displayScale },
+        characters: state.characters.map(item => item.id === characterId ? { ...item, displayScale: saved.displayScale } : item),
+        character: state.character?.id === characterId ? { ...state.character, displayScale: saved.displayScale } : state.character,
+        body: state.character?.id === characterId ? resizePetBody(state.body, state.bounds, saved.displayScale) : state.body,
+      }));
+    } catch (error) {
+      set({ error: typeof error === "string" ? error : error instanceof Error ? error.message : "角色大小保存失败，请重试。" });
+      throw error;
+    }
   },
 
   switchCharacter: async (characterId) => {
+    await get().abortAiRequest();
+    ++chatRevision;
+    set({ pendingChatMessage: null });
     applyBootstrap(set, await switchCharacter(characterId));
-    set({ currentState: createRuntimeState("calm"), bubble: "已切换人物" });
+    set({ currentState: createRuntimeState("calm") });
   },
 
   deleteCharacter: async (characterId) => {
+    await get().abortAiRequest();
+    ++chatRevision;
+    set({ pendingChatMessage: null });
     applyBootstrap(set, await deleteCharacter(characterId));
-    set({ currentState: createRuntimeState("calm"), bubble: "人物已删除" });
-  },
-
-  deleteChatSession: async (sessionId) => {
-    applyBootstrap(set, await deleteChatSession(sessionId));
+    set({ currentState: createRuntimeState("calm") });
   },
 
   deleteChatHistoryDay: async (dateKey) => {
+    await get().abortAiRequest();
+    ++chatRevision;
     applyBootstrap(set, await deleteChatHistoryDay(dateKey));
   },
-
-  saveSettings: async (settings) => {
-    const saved = await saveSettings(settings);
-    set({ settings: saved, bubble: "设置已保存" });
-  },
-
-  resetStats: async () => {
-    applyBootstrap(set, await resetStats());
-    set({ currentState: createRuntimeState("calm"), bubble: "鑳介噺涓庡ソ鎰熷凡閲嶇疆" });
-  },
-
-  validateSkinPath: (path) => validateSkinPath(path),
 
   loadFrameAssets: async () => {
     set({ frameAssets: await listFrameAssets() });
@@ -941,7 +844,6 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       const frameAssets = await listFrameAssets();
       set({
         frameAssets: mergeFrameAsset(frameAssets, asset),
-        bubble: "搴忓垪甯ц祫婧愬凡瀵煎叆",
       });
     }
     return asset;
@@ -952,20 +854,25 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     const frameAssets = await listFrameAssets();
     set({
       frameAssets: mergeFrameAsset(frameAssets, asset),
-      bubble: "搴忓垪甯ц祫婧愬凡瀵煎叆",
     });
     return asset;
   },
 
   deleteFrameAsset: async (assetId) => {
     const frameAssets = await deleteFrameAssetApi(assetId);
-    set({ frameAssets, bubble: "素材包已删除" });
+    set({ frameAssets });
   },
 
   openDataDir: () => openDataDir(),
 
   tickAnimation: () => {
     const state = get();
+    if (state.pendingChatMessage && !isPhysicalBusy(state) && !state.chatStreaming && !state.chatStopping) {
+      const text = state.pendingChatMessage;
+      set({ pendingChatMessage: null });
+      void get().sendAiChat(text);
+      return;
+    }
     const now = Date.now();
     const key = state.currentState.definition.key;
     const expired = state.currentState.expiresAt !== null && now >= state.currentState.expiresAt;
@@ -1100,223 +1007,103 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   // ==================== AI Chat Actions ====================
 
   sendAiChat: async (content: string) => {
-    if (!content.trim()) return;
-
+    const text = content.trim();
     const state = get();
-    set(interactionReset());
-
-    // Physical motion loop protection 鈥?queue message if in fly_up/fall_down/dizzy
-    const mType = state.movementState.type;
-    if (
-      !state.onGround ||
-      mType === "thrown" ||
-      mType === "fall" ||
-      (state.currentState.definition.key === "fly_up") ||
-      (state.currentState.definition.key === "fall_down") ||
-      (state.currentState.definition.key === "dizzy")
-    ) {
-      set({ pendingChatMessage: content.trim() });
-      return;
+    if (!text || !state.character || state.chatStreaming || state.chatStopping) return "rejected";
+    if (state.pendingChatMessage) { set({ error: "已有一条消息等待发送，请先取消等待再编辑。" }); return "rejected"; }
+    if ([...text].length > 16000) { set({ error: "消息过长，请缩短到 16000 字以内。" }); return "rejected"; }
+    if (isPhysicalBusy(state)) {
+      set((s) => ({ pendingChatMessage: text, error: null, chatDrafts: { ...s.chatDrafts, [state.character!.id]: text } }));
+      return "queued";
     }
-
     const requestId = crypto.randomUUID();
+    const characterId = state.character.id;
     const sessionId = state.sessions[0]?.id ?? crypto.randomUUID();
-    const wakingFromSleep = state.currentState.definition.key === SLEEPING_KEY || state.behaviorFlow === "waking";
-
-    // Start thinking unless sleeping needs the wake_up transition first.
-    set({
-      ...interactionReset(),
-      chatStreaming: true,
-      streamingContent: "",
-      currentRequestId: requestId,
-      currentSessionId: sessionId,
-      currentState: wakingFromSleep ? createRuntimeState(WAKE_UP_KEY) : createRuntimeState("thinking"),
-      behaviorFlow: wakingFromSleep ? "waking" : state.behaviorFlow,
-      movementState: wakingFromSleep ? { ...state.movementState, type: "idle", animationKey: WAKE_UP_KEY, idleTimer: 999999 } : state.movementState,
+    const revision = ++chatRevision;
+    const isCurrent = () => chatRevision === revision && get().character?.id === characterId;
+    const restoreDraft = () => set((s) => ({ chatDrafts: { ...s.chatDrafts, [characterId]: s.chatDrafts[characterId] || text } }));
+    const waking = state.currentState.definition.key === SLEEPING_KEY || state.behaviorFlow === "waking";
+    clearTypewriter();
+    set({ ...interactionReset(), chatStreaming: true, error: null, streamingContent: "", currentRequestId: requestId,
+      currentState: createRuntimeState(waking ? WAKE_UP_KEY : "thinking"),
+      behaviorFlow: waking ? "waking" : state.behaviorFlow,
+      movementState: waking ? { ...state.movementState, type: "idle", animationKey: WAKE_UP_KEY, idleTimer: 999999 } : state.movementState,
     });
-
-    // Add user message to local messages immediately
-    const now = new Date().toISOString();
-    const userMsg: ChatMessage = {
-      id: crypto.randomUUID(),
-      sessionId,
-      characterId: state.character?.id ?? "",
-      role: "user",
-      content: content.trim(),
-      createdAt: now,
-      tokenCount: content.length,
-      metadataJson: null,
-    };
-    set((s) => ({ messages: [...s.messages, userMsg] }));
-
-    const unlisten = listen<AiChatEvent>("ai-chat-event", (event) => {
-      const evt = event.payload;
-      if (evt.request_id !== requestId) return;
-
-      switch (evt.event) {
-        case "start":
-          // Already in thinking state
-          break;
-
-        case "delta":
-          enqueueVisibleStreamChunk(set, evt.content ?? "");
-          break;
-
-        case "done": {
-          clearTypewriter();
-          const fullResponse = evt.full_response ?? get().streamingContent;
-          const animKey = normalizeChatAction(evt.action);
-          set({
-            chatStreaming: false,
-            streamingContent: "",
-            currentRequestId: null,
-            currentSessionId: null,
-          });
-
-          // Add assistant message to local messages
-          const assistantMsg: ChatMessage = {
-            id: crypto.randomUUID(),
-            sessionId,
-            characterId: state.character?.id ?? "",
-            role: "assistant",
-            content: fullResponse,
-            createdAt: new Date().toISOString(),
-            tokenCount: 0,
-            metadataJson: JSON.stringify({
-              action: animKey,
-              rawAction: evt.action ?? null,
-            }),
-          };
-          set((s) => ({
-            messages: [...s.messages, assistantMsg],
-            currentState: canPlayChatAction(s) ? createRuntimeState(animKey) : s.currentState,
-          }));
-
-          unlisten.then((fn) => fn());
-          break;
-        }
-
-        case "error": {
-          clearTypewriter();
-          set({
-            chatStreaming: false,
-            streamingContent: "",
-            currentRequestId: null,
-            currentSessionId: null,
-            currentState: createRuntimeState("error"),
-            bubble: evt.message ?? "AI 璇锋眰澶辫触",
-          });
-          unlisten.then((fn) => fn());
-          break;
-        }
-
-        case "aborted": {
-          clearTypewriter();
-          set({
-            chatStreaming: false,
-            currentRequestId: null,
-            currentSessionId: null,
-            currentState: createRuntimeState("calm"),
-          });
-          unlisten.then((fn) => fn());
-          break;
-        }
-      }
-    });
-
-    // Start streaming (fire and forget 鈥?events come via listener)
+    let unlisten: (() => void) | undefined;
     try {
-      await streamAiMessage(requestId, sessionId, content.trim());
-      applyBootstrap(set, await bootstrapApp());
-    } catch (err) {
-      // If invoke itself fails (not the stream), clean up
-      set({
-        chatStreaming: false,
-        streamingContent: "",
-        currentRequestId: null,
-        currentState: createRuntimeState("error"),
-        bubble: err instanceof Error ? err.message : "AI 璇锋眰澶辫触",
+      unlisten = await listen<AiChatEvent>("ai-chat-event", ({ payload: evt }) => {
+        if (evt.request_id !== requestId || !isCurrent() || get().currentRequestId !== requestId) return;
+        if (evt.event === "delta") { enqueueVisibleStreamChunk(set, evt.content ?? ""); return; }
+        if (evt.event === "start") {
+          if (evt.user_message) {
+            const message = evt.user_message;
+            set((s) => ({
+              messages: s.messages.some(item => item.id === message.id) ? s.messages : [...s.messages, message],
+              chatDrafts: { ...s.chatDrafts, [characterId]: s.chatDrafts[characterId]?.trim() === text ? "" : s.chatDrafts[characterId] ?? "" },
+            }));
+          }
+          return;
+        }
+        clearTypewriter();
+        set({ chatStreaming: false, streamingContent: "", currentRequestId: null });
+        if (evt.event === "done") {
+          const action = normalizeChatAction(evt.action);
+          set((s) => ({ messages: [...s.messages, { id: crypto.randomUUID(), sessionId, characterId, role: "assistant",
+            content: evt.full_response ?? "", createdAt: new Date().toISOString(), tokenCount: 0,
+            metadataJson: JSON.stringify({ action, rawAction: evt.action ?? null }) }],
+            currentState: canPlayChatAction(s) ? createRuntimeState(action) : s.currentState }));
+        } else if (evt.event === "error") {
+          restoreDraft();
+          set({ error: evt.message ?? "AI 请求失败，请检查聊天连接设置。", currentState: createRuntimeState("error") });
+        } else { set({ currentState: createRuntimeState("calm") }); }
       });
-      unlisten.then((fn) => fn());
-    }
+      if (!isCurrent() || get().currentRequestId !== requestId) return "rejected";
+      const payload = await streamAiMessage(requestId, sessionId, characterId, text);
+      if (isCurrent()) {
+        applyBootstrap(set, payload);
+        set((s) => ({ chatStreaming: false, streamingContent: "", currentRequestId: null, chatDrafts: { ...s.chatDrafts, [characterId]: s.chatDrafts[characterId]?.trim() === text ? "" : s.chatDrafts[characterId] ?? "" } }));
+      }
+      return "sent";
+    } catch (error) {
+      if (isCurrent()) {
+        clearTypewriter();
+        restoreDraft();
+        // Reconcile persisted history; a preflight failure never creates a fake sent message.
+        try {
+          const payload = await bootstrapApp();
+          if (isCurrent()) applyBootstrap(set, payload);
+        } catch { /* Keep the last known history if refreshing also fails. */ }
+        if (!isCurrent()) return "failed";
+        set({ error: error instanceof Error ? error.message : typeof error === "string" ? error : "AI 请求失败，请检查聊天连接设置。",
+          chatStreaming: false, chatStopping: false, streamingContent: "", currentRequestId: null, currentState: createRuntimeState("error") });
+      }
+      return "failed";
+    } finally { unlisten?.(); }
   },
 
   abortAiRequest: async () => {
-    const state = get();
-    const requestId = state.currentRequestId;
+    if (stoppingPromise) return stoppingPromise;
+    const { currentRequestId: requestId, character } = get();
+    set({ pendingChatMessage: null });
     if (!requestId) return;
-    const sessionId = state.currentSessionId ?? state.sessions[0]?.id ?? "";
-    const partial = state.streamingContent;
-
-    // Track rapid cancels for interaction angry
-    get().trackRapidCancel();
+    const revision = ++chatRevision;
     clearTypewriter();
-
-    try {
-      await abortAiRequestApi(requestId);
-    } catch {
-      // Request may have already completed
-    }
-
-    const now = new Date().toISOString();
-    const assistantMsg: ChatMessage | null = partial.trim()
-      ? {
-          id: crypto.randomUUID(),
-          sessionId,
-          characterId: state.character?.id ?? "",
-          role: "assistant",
-          content: `${partial}\n\n[宸蹭腑鏂璢`,
-          createdAt: now,
-          tokenCount: partial.length,
-          metadataJson: JSON.stringify({ status: "interrupted" }),
-        }
-      : null;
-
-    set((s) => ({
-      chatStreaming: false,
-      streamingContent: "",
-      currentRequestId: null,
-      currentSessionId: null,
-      currentState: createRuntimeState("calm"),
-      messages: assistantMsg ? [...s.messages, assistantMsg] : s.messages,
-    }));
-
-    if (sessionId && partial.trim()) {
+    set({ chatStreaming: true, chatStopping: true, currentRequestId: null, streamingContent: "" });
+    stoppingPromise = (async () => {
+      let stopped = false;
       try {
-        applyBootstrap(set, await saveInterruptedAiMessage(requestId, sessionId, partial));
-      } catch {
-        // Local interrupted message is already preserved.
+        const payload = await abortAiRequestApi(requestId);
+        stopped = true;
+        if (chatRevision === revision && get().character?.id === character?.id) applyBootstrap(set, payload);
+      } catch (error) {
+        set({ error: typeof error === "string" ? error : error instanceof Error ? error.message : "停止请求失败，请重试。" });
+        throw error;
+      } finally {
+        if (chatRevision === revision) set({ chatStreaming: !stopped, chatStopping: false, currentRequestId: stopped ? null : requestId, currentState: createRuntimeState(stopped ? "calm" : "error") });
+        stoppingPromise = null;
       }
-    }
-  },
-
-  trackRapidClick: () => {
-    const now = Date.now();
-    const state = get();
-    if (now - state.rapidClickFirstAt > 10000) {
-      set({ rapidClickCount: 1, rapidClickFirstAt: now });
-    } else {
-      set({ rapidClickCount: state.rapidClickCount + 1 });
-    }
-  },
-
-  trackRapidCancel: () => {
-    const now = Date.now();
-    const state = get();
-    if (now - state.rapidCancelFirstAt > 30000) {
-      set({ rapidCancelCount: 1, rapidCancelFirstAt: now });
-    } else {
-      set({ rapidCancelCount: state.rapidCancelCount + 1 });
-    }
-  },
-
-  recordPetInteraction: async () => {
-    set(interactionReset());
-    try {
-      applyBootstrap(set, await recordPetInteraction());
-    } catch {
-      // Interaction stats are best-effort; movement should not be blocked.
-    }
+    })();
+    return stoppingPromise;
   },
 
   lullToSleep: () => {

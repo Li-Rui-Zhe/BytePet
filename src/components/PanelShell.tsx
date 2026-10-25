@@ -9,6 +9,9 @@ interface PanelShellProps extends PropsWithChildren {
   title: string;
   subtitle?: string;
   onClose: () => void;
+  hideNavigation?: boolean;
+  preferredSize?: Size;
+  className?: string;
 }
 
 type ResizeEdge = "n" | "e" | "s" | "w" | "ne" | "se" | "sw" | "nw";
@@ -29,13 +32,13 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(value, max));
 }
 
-export function PanelShell({ title, subtitle, children, onClose }: PanelShellProps) {
+export function PanelShell({ title, subtitle, children, onClose, hideNavigation = false, preferredSize, className = "" }: PanelShellProps) {
   const viewport = useViewportSize();
   const boxPosition = useAppStore((s) => s.boxPosition);
   const activePanel = useAppStore((s) => s.activePanel);
   const openPanel = useAppStore((s) => s.openPanel);
   const [customSize, setCustomSize] = useState<Size | null>(null);
-  const layout = getPanelLayout(boxPosition, viewport, customSize);
+  const layout = getPanelLayout(boxPosition, viewport, customSize ?? preferredSize);
   const displayRect = layout;
   const resizeStartRef = useRef<{ x: number; y: number; rect: PanelRect; edge: ResizeEdge } | null>(null);
 
@@ -128,9 +131,16 @@ export function PanelShell({ title, subtitle, children, onClose }: PanelShellPro
 
   return (
     <section
-      className="glass-panel panel-shell no-drag pointer-events-auto fixed z-30 flex flex-col text-slate-700 shadow-panel"
+      className={`glass-panel panel-shell no-drag pointer-events-auto fixed z-30 flex flex-col text-slate-700 shadow-panel ${className}`}
       data-interactive="true"
+      aria-label={title}
       data-placement={layout.placement}
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || event.defaultPrevented || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onClose();
+      }}
       style={{
         left: displayRect.x,
         top: displayRect.y,
@@ -139,26 +149,26 @@ export function PanelShell({ title, subtitle, children, onClose }: PanelShellPro
       }}
     >
       <header className="panel-header">
-        <div className="min-w-0 flex-1">
-          <h2 className="truncate text-[15px] font-semibold text-slate-900">{title}</h2>
-          {subtitle ? <p className="mt-0.5 truncate text-[11px] text-sky-700/75">{subtitle}</p> : null}
+        <div className="panel-heading">
+          <h2>{title}</h2>
+          {subtitle ? <p title={subtitle}>{subtitle}</p> : null}
         </div>
         <button
           className="panel-close"
           type="button"
           onClick={onClose}
           aria-label="关闭面板"
-          title="关闭"
+          title="关闭（Esc）"
         >
           <X size={15} />
         </button>
       </header>
 
-      <div className="panel-dock">
+      {!hideNavigation ? <div className="panel-dock">
         <ActionBar activePanel={activePanel} compact onAction={openPanel} />
-      </div>
+      </div> : null}
 
-      <div className="min-h-0 flex-1">{children}</div>
+      <div className="panel-content min-h-0 flex-1">{children}</div>
       {RESIZE_EDGES.map((edge) => (
         <button
           key={edge}

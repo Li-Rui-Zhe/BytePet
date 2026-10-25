@@ -1,0 +1,7 @@
+{
+  "keys": { "label": "打开 DeepSeek 密钥管理", "url": "https://platform.deepseek.com/api_keys" },
+  "balance": { "label": "查看账户余额", "url": "https://platform.deepseek.com/balance" },
+  "docs": { "label": "DeepSeek 官方文档", "url": "https://api-docs.deepseek.com/zh-cn/" },
+  "pricing": { "label": "查看官方计费说明", "url": "https://api-docs.deepseek.com/zh-cn/quick_start/pricing/" },
+  "errors": { "label": "查看官方错误码说明", "url": "https://api-docs.deepseek.com/zh-cn/quick_start/error_codes/" }
+}

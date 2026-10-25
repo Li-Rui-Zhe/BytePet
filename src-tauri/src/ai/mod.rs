@@ -1,13 +1,58 @@
-pub mod anthropic_compat;
-pub mod gemini_native;
-pub mod ollama;
 pub mod openai_compat;
+pub mod requests;
+
+use requests::ChatRequest;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use tauri::{AppHandle, Emitter};
 
 use crate::database;
+
+pub const AI_PROTOCOL: &str = "openai-compatible";
+pub const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
+pub const DEEPSEEK_MODEL: &str = "deepseek-flash";
+
+#[derive(Deserialize)]
+struct DeepSeekModel {
+    id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeepSeekModelCatalog {
+    default_model: String,
+    models: Vec<DeepSeekModel>,
+}
+
+static DEEPSEEK_MODELS: once_cell::sync::Lazy<DeepSeekModelCatalog> =
+    once_cell::sync::Lazy::new(|| {
+        let catalog: DeepSeekModelCatalog =
+            serde_json::from_str(include_str!("../../../src/config/deepseekModels.json"))
+                .expect("bundled DeepSeek model catalog must be valid");
+        assert_eq!(catalog.default_model, DEEPSEEK_MODEL);
+        catalog
+    });
+
+pub fn is_deepseek_model(model: &str) -> bool {
+    DEEPSEEK_MODELS.models.iter().any(|item| item.id == model)
+}
+
+fn is_profile(id: &str, prefix: &str) -> bool {
+    id.strip_prefix(prefix).is_some_and(|value| {
+        uuid::Uuid::parse_str(value)
+            .is_ok_and(|uuid| uuid.hyphenated().to_string().eq_ignore_ascii_case(value))
+    })
+}
+
+pub fn is_deepseek_connection(id: &str) -> bool {
+    id == "deepseek" || is_profile(id, "deepseek-profile-")
+}
+
+pub fn is_managed_connection(id: &str) -> bool {
+    is_deepseek_connection(id) || id == "custom" || is_profile(id, "custom-profile-")
+}
 
 /// Provider configuration from database
 #[derive(Debug, Clone)]
@@ -43,6 +88,7 @@ pub enum AiChatEvent {
     Start {
         request_id: String,
         session_id: String,
+        user_message: database::ChatMessage,
     },
     #[serde(rename = "delta")]
     Delta {
@@ -260,45 +306,15 @@ fn strip_tool_call_blocks(input: &str) -> String {
     output
 }
 
-/// Normalize base URL before applying the provider-owned endpoint rule.
-fn normalize_base_url(base_url: &str) -> String {
-    let url = base_url.trim_end_matches('/');
-    url.to_string()
-}
-
-/// Build endpoint URL based on provider type
-pub fn build_endpoint(base_url: &str, provider_type: &str, model: &str) -> String {
-    let normalized = normalize_base_url(base_url);
-    match provider_type {
-        "openai-compatible" => format!("{}/chat/completions", normalized),
-        "anthropic-compatible" => {
-            if normalized.ends_with("/v1") {
-                format!("{}/messages", normalized)
-            } else {
-                format!("{}/v1/messages", normalized)
-            }
-        }
-        "gemini-native" => {
-            format!(
-                "{}/v1beta/models/{}:streamGenerateContent",
-                normalized, model
-            )
-        }
-        "ollama" => {
-            format!("{}/api/chat", normalized)
-        }
-        _ => format!("{}/chat/completions", normalized),
+/// Accept either a Base URL or a complete Chat Completions endpoint.
+pub fn build_endpoint(base_url: &str) -> String {
+    let normalized = base_url.trim().trim_end_matches('/');
+    if normalized.ends_with("/chat/completions") {
+        normalized.to_string()
+    } else {
+        format!("{normalized}/chat/completions")
     }
 }
-
-/// Mask sensitive strings in logs
-pub fn mask_sensitive(text: &str) -> String {
-    if text.len() <= 8 {
-        return "***".to_string();
-    }
-    format!("{}...{}", &text[..4], &text[text.len() - 4..])
-}
-
 /// Keep provider diagnostics useful without dumping huge vendor responses.
 pub fn truncate_debug_body(text: &str) -> String {
     const MAX_CHARS: usize = 1200;
@@ -327,33 +343,31 @@ pub fn build_http_client(_config: &ProviderConfig) -> Result<reqwest::Client, St
         .map_err(|error| format!("HTTP client build failed: {}", error))
 }
 
-pub fn drain_complete_lines(buffer: &mut String, chunk: &[u8]) -> Vec<String> {
-    buffer.push_str(&String::from_utf8_lossy(chunk));
-
+pub fn drain_complete_lines(buffer: &mut Vec<u8>, chunk: &[u8]) -> Result<Vec<String>, String> {
+    buffer.extend_from_slice(chunk);
     let mut lines = Vec::new();
-    while let Some(newline_index) = buffer.find('\n') {
-        let mut line = buffer[..newline_index].to_string();
-        if line.ends_with('\r') {
-            line.pop();
-        }
-        lines.push(line);
-        buffer.drain(..=newline_index);
+    while let Some(index) = buffer.iter().position(|byte| *byte == b'\n') {
+        let bytes: Vec<u8> = buffer.drain(..=index).collect();
+        let line = std::str::from_utf8(&bytes)
+            .map_err(|_| "服务端返回了无效的 UTF-8 文本。".to_string())?;
+        lines.push(line.trim_end_matches(['\r', '\n']).to_string());
     }
-
-    lines
+    Ok(lines)
 }
 
-pub fn drain_remaining_line(buffer: &mut String) -> Option<String> {
-    let line = buffer.trim_matches(['\r', '\n']).to_string();
-    buffer.clear();
-
-    if line.trim().is_empty() {
-        None
-    } else {
-        Some(line)
-    }
+pub fn drain_remaining_line(buffer: &mut Vec<u8>) -> Result<Option<String>, String> {
+    let bytes = std::mem::take(buffer);
+    let line =
+        String::from_utf8(bytes).map_err(|_| "服务端返回了不完整的 UTF-8 文本。".to_string())?;
+    let line = line.trim_matches(['\r', '\n']);
+    Ok((!line.trim().is_empty()).then(|| line.to_string()))
 }
 
+pub fn interrupted_reply(text: &str) -> String {
+    let clean = strip_tool_call_blocks(text);
+    let marker = clean.to_ascii_lowercase().find("[[pet_action:");
+    clean[..marker.unwrap_or(clean.len())].trim().to_string()
+}
 pub fn diagnose_request_error(error: &reqwest::Error) -> String {
     let mut hints = Vec::new();
 
@@ -431,173 +445,93 @@ pub fn diagnose_http_error(status: reqwest::StatusCode, body: &str) -> String {
     }
 }
 
-/// Send a streaming AI request and emit events to frontend
+fn ready_config(full: database::AiProviderFullConfig) -> Result<ProviderConfig, String> {
+    if full.config.provider_type != AI_PROTOCOL {
+        return Err("请使用 OpenAI 兼容接口。".to_string());
+    }
+    if is_deepseek_connection(&full.config.provider_id) && full.api_key.is_empty() {
+        return Err("请先在设置中填写 DeepSeek API Key。".to_string());
+    }
+    Ok(ProviderConfig {
+        provider_id: full.config.provider_id,
+        provider_type: full.config.provider_type,
+        base_url: full.config.base_url,
+        model: full.config.model,
+        api_key: full.api_key,
+        temperature: full.config.temperature,
+        max_output_tokens: full.config.max_output_tokens,
+        timeout_ms: full.config.timeout_ms,
+    })
+}
+
+pub fn active_provider_config(app: &AppHandle) -> Result<ProviderConfig, String> {
+    ready_config(
+        database::get_active_ai_provider_internal(app)?.ok_or("请先在设置中配置聊天连接。")?,
+    )
+}
+
 pub async fn stream_ai_chat(
     app: AppHandle,
-    request_id: String,
-    session_id: String,
+    request: Arc<ChatRequest>,
+    config: ProviderConfig,
     messages: Vec<AiChatMessage>,
 ) -> Result<AiChatResult, String> {
-    // Get active provider config (internal, includes API key)
-    let full_config = database::get_active_ai_provider_internal(&app)?
-        .ok_or("No active AI provider configured")?;
-
-    if full_config.config.provider_type != "ollama" && full_config.api_key.is_empty() {
-        return Err("API key is not set".to_string());
-    }
-
-    let config = ProviderConfig {
-        provider_id: full_config.config.provider_id.clone(),
-        provider_type: full_config.config.provider_type.clone(),
-        base_url: full_config.config.base_url.clone(),
-        model: full_config.config.model.clone(),
-        api_key: full_config.api_key,
-        temperature: full_config.config.temperature,
-        max_output_tokens: full_config.config.max_output_tokens,
-        timeout_ms: full_config.config.timeout_ms,
-    };
-
-    // Emit start event
-    let _ = app.emit(
-        "ai-chat-event",
-        AiChatEvent::Start {
-            request_id: request_id.clone(),
-            session_id: session_id.clone(),
-        },
-    );
-
-    // Route to appropriate adapter
-    let result = match config.provider_type.as_str() {
-        "openai-compatible" => {
-            openai_compat::stream_chat(&app, &config, &messages, &request_id, &session_id, true)
-                .await
-        }
-        "anthropic-compatible" => {
-            anthropic_compat::stream_chat(&app, &config, &messages, &request_id, &session_id, true)
-                .await
-        }
-        "gemini-native" => {
-            gemini_native::stream_chat(&app, &config, &messages, &request_id, &session_id, true)
-                .await
-        }
-        "ollama" => {
-            ollama::stream_chat(&app, &config, &messages, &request_id, &session_id, true).await
-        }
-        _ => Err(format!("Unknown provider type: {}", config.provider_type)),
-    };
-
-    match result {
-        Ok(full_response) => {
-            let latest_user_text = messages
-                .iter()
-                .rev()
-                .find(|message| message.role == "user")
-                .map(|message| message.content.as_str());
-            let parsed = parse_pet_action_response(&full_response, latest_user_text);
-            // Emit done event
+    let full_response = openai_compat::stream_chat(&config, &messages, |content| {
+        request.append(content);
+        if !request.is_cancelled() {
             let _ = app.emit(
                 "ai-chat-event",
-                AiChatEvent::Done {
-                    request_id: request_id.clone(),
-                    session_id: session_id.clone(),
-                    full_response: parsed.reply.clone(),
-                    action: parsed.action.clone(),
+                AiChatEvent::Delta {
+                    request_id: request.id.clone(),
+                    session_id: request.session_id.clone(),
+                    content: content.to_string(),
                 },
             );
-            Ok(parsed)
         }
-        Err(err_msg) => {
-            // Emit error event
-            let _ = app.emit(
-                "ai-chat-event",
-                AiChatEvent::Error {
-                    request_id: request_id.clone(),
-                    session_id: session_id.clone(),
-                    message: err_msg.clone(),
-                },
-            );
-            Err(err_msg)
-        }
-    }
+    })
+    .await?;
+    let user_text = messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "user")
+        .map(|message| message.content.as_str());
+    Ok(parse_pet_action_response(&full_response, user_text))
 }
 
-/// Test connection for a provider
-pub async fn test_connection(app: &AppHandle, provider_id: &str) -> Result<String, String> {
-    let full_config =
-        database::get_ai_provider_full(app, provider_id)?.ok_or("Provider not found")?;
-
-    if full_config.config.provider_type != "ollama" && full_config.api_key.is_empty() {
-        return Err("API key is not set for this provider".to_string());
-    }
-
-    let config = ProviderConfig {
-        provider_id: full_config.config.provider_id,
-        provider_type: full_config.config.provider_type.clone(),
-        base_url: full_config.config.base_url,
-        model: full_config.config.model,
-        api_key: full_config.api_key,
-        temperature: full_config.config.temperature,
-        max_output_tokens: full_config.config.max_output_tokens,
-        timeout_ms: full_config.config.timeout_ms,
-    };
-
-    let test_messages = vec![AiChatMessage {
-        role: "user".to_string(),
-        content: "Hi".to_string(),
-    }];
-
-    let result = match config.provider_type.as_str() {
-        "openai-compatible" => openai_compat::test_request(&config, &test_messages).await,
-        "anthropic-compatible" => anthropic_compat::test_request(&config, &test_messages).await,
-        "gemini-native" => gemini_native::test_request(&config, &test_messages).await,
-        "ollama" => ollama::test_request(&config, &test_messages).await,
-        _ => Err("Unknown provider type".to_string()),
-    };
-
-    match result {
-        Ok(message) => Ok(format!(
-            "{}\nprovider={}, type={}, model={}, baseUrl={}",
-            message, config.provider_id, config.provider_type, config.model, config.base_url
-        )),
-        Err(message) => Err(format!(
-            "{}\nprovider={}, type={}, model={}, baseUrl={}",
-            message, config.provider_id, config.provider_type, config.model, config.base_url
-        )),
-    }
+pub async fn test_connection(
+    app: &AppHandle,
+    draft: database::SaveAiProviderRequest,
+) -> Result<String, String> {
+    let mut config = ready_config(database::preview_ai_provider(app, draft)?)?;
+    config.max_output_tokens = config.max_output_tokens.min(64);
+    openai_compat::test_request(
+        &config,
+        &[AiChatMessage {
+            role: "user".to_string(),
+            content: "Reply with OK.".to_string(),
+        }],
+    )
+    .await
 }
-
 #[cfg(test)]
 mod tests {
     use super::{build_endpoint, parse_pet_action_response};
 
     #[test]
-    fn openai_compatible_appends_chat_completions_without_forcing_v1() {
+    fn builds_base_and_full_endpoints_without_duplicating_paths() {
         assert_eq!(
-            build_endpoint(
-                "https://api.deepseek.com",
-                "openai-compatible",
-                "deepseek-v4-flash"
-            ),
+            build_endpoint("https://api.deepseek.com"),
             "https://api.deepseek.com/chat/completions"
         );
         assert_eq!(
-            build_endpoint(
-                "https://dashscope.aliyuncs.com/compatible-mode/v1/",
-                "openai-compatible",
-                "qwen-plus"
-            ),
-            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+            build_endpoint("http://localhost:11434/v1/"),
+            "http://localhost:11434/v1/chat/completions"
         );
         assert_eq!(
-            build_endpoint(
-                "https://open.bigmodel.cn/api/paas/v4",
-                "openai-compatible",
-                "glm-4.7-flash"
-            ),
-            "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+            build_endpoint("https://example.com/v1/chat/completions/"),
+            "https://example.com/v1/chat/completions"
         );
     }
-
     #[test]
     fn pet_action_response_removes_marker_and_uses_action() {
         let parsed = parse_pet_action_response(
@@ -649,5 +583,28 @@ mod tests {
 
         assert_eq!(parsed.reply, "我会陪着你。");
         assert_eq!(parsed.action, "comfort");
+    }
+
+    #[test]
+    fn utf8_is_preserved_at_every_possible_chunk_boundary() {
+        let text = "data: 你好🐱\r\ndata: 下一行\n";
+        for split in 0..=text.len() {
+            let mut buffer = Vec::new();
+            let mut lines =
+                super::drain_complete_lines(&mut buffer, &text.as_bytes()[..split]).unwrap();
+            lines.extend(
+                super::drain_complete_lines(&mut buffer, &text.as_bytes()[split..]).unwrap(),
+            );
+            assert_eq!(lines, vec!["data: 你好🐱", "data: 下一行"]);
+            assert!(super::drain_remaining_line(&mut buffer).unwrap().is_none());
+        }
+        let mut buffer = Vec::new();
+        assert!(super::drain_complete_lines(&mut buffer, &[0xff, b'\n']).is_err());
+    }
+
+    #[test]
+    fn interrupted_reply_hides_incomplete_action_and_tool_markup() {
+        assert_eq!(super::interrupted_reply("你好 [[PET_ACTION:hap"), "你好");
+        assert_eq!(super::interrupted_reply("你好 <tool_call>{"), "你好");
     }
 }

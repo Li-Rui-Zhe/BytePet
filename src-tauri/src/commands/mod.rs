@@ -1,67 +1,19 @@
 use std::path::PathBuf;
-use std::sync::Arc;
-
 use tauri::{AppHandle, Emitter};
-use tokio::sync::Mutex;
 
 use crate::ai;
 use crate::database::{
-    self, AiProviderConfig, AppSettings, BootstrapPayload, ChatSendResult, CreateCharacterRequest,
-    FeedResult, FoodItem, FoodReplaceRequest, FrameAssetOption, SaveAiProviderRequest,
-    SkinValidationReport, UpdateCharacterRequest,
+    self, AiProviderConfig, BootstrapPayload, CreateCharacterRequest, FrameAssetOption,
+    SaveAiProviderRequest, UpdateCharacterRequest,
 };
 use crate::resources;
 
-static ACTIVE_REQUEST: once_cell::sync::Lazy<Arc<Mutex<Option<String>>>> =
-    once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(None)));
+static REQUESTS: once_cell::sync::Lazy<ai::requests::RequestManager> =
+    once_cell::sync::Lazy::new(ai::requests::RequestManager::default);
 
 #[tauri::command]
 pub fn bootstrap_app(app: AppHandle) -> Result<BootstrapPayload, String> {
     database::bootstrap(&app)
-}
-
-#[tauri::command]
-pub fn send_chat_message(
-    app: AppHandle,
-    content: String,
-    session_id: Option<String>,
-) -> Result<ChatSendResult, String> {
-    database::send_chat_message(&app, content, session_id)
-}
-
-#[tauri::command]
-pub fn feed_food(app: AppHandle, food_id: String) -> Result<FeedResult, String> {
-    database::feed_food(&app, food_id)
-}
-
-#[tauri::command]
-pub fn replace_food(app: AppHandle, request: FoodReplaceRequest) -> Result<FoodItem, String> {
-    database::replace_food(&app, request)
-}
-
-#[tauri::command]
-pub fn reorder_foods(app: AppHandle, food_ids: Vec<String>) -> Result<Vec<FoodItem>, String> {
-    database::reorder_foods(&app, food_ids)
-}
-
-#[tauri::command]
-pub fn record_pet_interaction(app: AppHandle) -> Result<BootstrapPayload, String> {
-    database::record_pet_interaction(&app)
-}
-
-#[tauri::command]
-pub fn save_settings(app: AppHandle, settings: AppSettings) -> Result<AppSettings, String> {
-    database::save_settings(&app, settings)
-}
-
-#[tauri::command]
-pub fn reset_stats(app: AppHandle) -> Result<BootstrapPayload, String> {
-    database::reset_stats(&app)
-}
-
-#[tauri::command]
-pub fn validate_skin_path(app: AppHandle, path: String) -> Result<SkinValidationReport, String> {
-    resources::validate_skin_path(&app, &PathBuf::from(path))
 }
 
 #[tauri::command]
@@ -126,11 +78,6 @@ pub fn delete_character(app: AppHandle, character_id: String) -> Result<Bootstra
 }
 
 #[tauri::command]
-pub fn delete_chat_session(app: AppHandle, session_id: String) -> Result<BootstrapPayload, String> {
-    database::delete_chat_session(&app, &session_id)
-}
-
-#[tauri::command]
 pub fn chat_history_days(app: AppHandle) -> Result<Vec<database::ChatHistoryDay>, String> {
     database::chat_history_days(&app)
 }
@@ -170,13 +117,8 @@ pub fn save_ai_provider_config(
 }
 
 #[tauri::command]
-pub fn delete_ai_provider_api_key(app: AppHandle, provider_id: String) -> Result<(), String> {
-    database::delete_ai_provider_api_key(&app, provider_id)
-}
-
-#[tauri::command]
-pub fn delete_ai_provider_config(app: AppHandle, provider_id: String) -> Result<(), String> {
-    database::delete_ai_provider_config(&app, provider_id)
+pub fn delete_ai_connection(app: AppHandle, provider_id: String) -> Result<(), String> {
+    database::delete_ai_connection(&app, provider_id)
 }
 
 #[tauri::command]
@@ -185,8 +127,11 @@ pub fn set_active_ai_provider(app: AppHandle, provider_id: String) -> Result<(),
 }
 
 #[tauri::command]
-pub async fn test_ai_connection(app: AppHandle, provider_id: String) -> Result<String, String> {
-    ai::test_connection(&app, &provider_id).await
+pub async fn test_ai_connection(
+    app: AppHandle,
+    config: SaveAiProviderRequest,
+) -> Result<String, String> {
+    ai::test_connection(&app, config).await
 }
 
 #[tauri::command]
@@ -194,15 +139,20 @@ pub async fn stream_ai_message(
     app: AppHandle,
     request_id: String,
     session_id: String,
+    character_id: String,
     content: String,
-) -> Result<(), String> {
-    {
-        let mut active = ACTIVE_REQUEST.lock().await;
-        *active = Some(request_id.clone());
+) -> Result<BootstrapPayload, String> {
+    if content.trim().is_empty() || content.chars().count() > 16000 {
+        return Err("消息不能为空或超过 16000 个字符。".to_string());
     }
-
+    let request = REQUESTS
+        .begin(request_id.clone(), character_id, session_id.clone())
+        .await?;
+    let result: Result<(BootstrapPayload, Option<ai::AiChatResult>), String> = async {
     let bootstrap = database::bootstrap(&app)?;
     let character = bootstrap.character;
+    if character.id != request.character_id { return Err("人物已切换，请重新发送消息。".to_string()); }
+    let config = ai::active_provider_config(&app)?;
     let session_summary = bootstrap
         .sessions
         .iter()
@@ -210,9 +160,10 @@ pub async fn stream_ai_message(
         .map(|session| session.summary.clone())
         .unwrap_or_default();
 
-    database::save_user_message(&app, &session_id, &character.id, &content)?;
+    let user_message = database::save_user_message(&app, &session_id, &character.id, &content)?;
+    let _ = app.emit("ai-chat-event", ai::AiChatEvent::Start { request_id: request_id.clone(), session_id: session_id.clone(), user_message });
 
-    let history = database::get_chat_history(&app, &session_id, 20)?;
+    let history = database::get_chat_history(&app, &session_id, &request.character_id, 20)?;
     let mut messages: Vec<ai::AiChatMessage> = history
         .iter()
         .map(|m| ai::AiChatMessage {
@@ -254,61 +205,64 @@ pub async fn stream_ai_message(
         },
     );
 
-    let result = ai::stream_ai_chat(
-        app.clone(),
-        request_id.clone(),
-        session_id.clone(),
-        messages,
-    )
-    .await;
-
-    let still_active = {
-        let mut active = ACTIVE_REQUEST.lock().await;
-        let is_active = active.as_ref() == Some(&request_id);
-        if is_active {
-            *active = None;
-        }
-        is_active
+    let reply = tokio::select! {
+        biased;
+        _ = request.cancelled() => None,
+        reply = ai::stream_ai_chat(app.clone(), request.clone(), config, messages) => Some(reply),
     };
-
-    if !still_active {
-        return Ok(());
-    }
-
-    match result {
-        Ok(chat_result) => {
-            database::save_assistant_message(&app, &session_id, &character.id, &chat_result.reply)?;
-            database::record_completed_chat_round(&app, &character.id)?;
-            Ok(())
-        }
-        Err(err) => Err(err),
-    }
-}
-
-#[tauri::command]
-pub async fn abort_ai_request(app: AppHandle, request_id: String) -> Result<(), String> {
-    let mut active = ACTIVE_REQUEST.lock().await;
-    if active.as_ref() == Some(&request_id) {
-        *active = None;
-        let _ = app.emit(
-            "ai-chat-event",
-            ai::AiChatEvent::Aborted {
-                request_id,
-                session_id: String::new(),
-            },
-        );
-        Ok(())
+    if request.is_cancelled() || reply.is_none() {
+        let partial = ai::interrupted_reply(&request.partial());
+        let payload = database::save_interrupted_ai_message(&app, &session_id, &request.character_id, &partial)?;
+        Ok((payload, None))
     } else {
-        Err("Request not found or already completed".to_string())
+        let reply = reply.unwrap()?;
+        database::save_assistant_message(&app, &session_id, &request.character_id, &reply.reply)?;
+        Ok((database::bootstrap(&app)?, Some(reply)))
+    }
+    }.await;
+    REQUESTS.finish(&request).await;
+    match result {
+        Ok((payload, Some(reply))) => {
+            let _ = app.emit(
+                "ai-chat-event",
+                ai::AiChatEvent::Done {
+                    request_id,
+                    session_id,
+                    full_response: reply.reply,
+                    action: reply.action,
+                },
+            );
+            Ok(payload)
+        }
+        Ok((payload, None)) => {
+            let _ = app.emit(
+                "ai-chat-event",
+                ai::AiChatEvent::Aborted {
+                    request_id,
+                    session_id,
+                },
+            );
+            Ok(payload)
+        }
+        Err(message) => {
+            let _ = app.emit(
+                "ai-chat-event",
+                ai::AiChatEvent::Error {
+                    request_id,
+                    session_id,
+                    message: message.clone(),
+                },
+            );
+            Err(message)
+        }
     }
 }
 
 #[tauri::command]
-pub async fn save_interrupted_ai_message(
+pub async fn abort_ai_request(
     app: AppHandle,
-    session_id: String,
-    content: String,
+    request_id: String,
 ) -> Result<BootstrapPayload, String> {
-    let character = database::bootstrap(&app)?.character;
-    database::save_interrupted_ai_message(&app, &session_id, &character.id, &content)
+    REQUESTS.cancel(&request_id).await;
+    database::bootstrap(&app)
 }

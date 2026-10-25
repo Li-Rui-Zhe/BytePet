@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 export function useClickThrough() {
   const lastIgnoreState = useRef<boolean | null>(null);
@@ -8,12 +9,18 @@ export function useClickThrough() {
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
 
   useEffect(() => {
+    if (!window.__TAURI_INTERNALS__) return;
+    let disposed = false;
+    const reset = () => { lastIgnoreState.current = null; };
+    const unlisten = listen("cursor-state-reset", reset).catch(() => () => {});
+    window.addEventListener("focus", reset);
     const checkMouse = async () => {
       if (isCheckingRef.current) return;
       isCheckingRef.current = true;
 
       try {
         const [x, y] = await invoke<[number, number]>("get_mouse_pos");
+        if (disposed) return;
         const target = document.elementFromPoint(x, y) as HTMLElement | null;
 
         let shouldIgnore = true;
@@ -100,6 +107,6 @@ export function useClickThrough() {
     };
 
     const interval = setInterval(checkMouse, 100);
-    return () => clearInterval(interval);
+    return () => { disposed = true; clearInterval(interval); window.removeEventListener("focus", reset); void unlisten.then(fn => fn()).catch(() => {}); };
   }, []);
 }

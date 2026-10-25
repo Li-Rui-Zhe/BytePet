@@ -34,7 +34,7 @@ export function ToolboxPopover({ activePanel, onAction }: ToolboxPopoverProps) {
           <Sparkles size={13} />
           工具箱
         </span>
-        <span className="toolbox-shortcut">拖动箱子可换位置</span>
+        <span className="toolbox-shortcut">拖动可移动</span>
         <button
           className="toolbox-minimize-button"
           type="button"
@@ -45,7 +45,7 @@ export function ToolboxPopover({ activePanel, onAction }: ToolboxPopoverProps) {
           <Minimize2 size={14} />
         </button>
       </div>
-      <ActionBar activePanel={activePanel} hidePanels={["settings"]} onAction={onAction} />
+      <ActionBar activePanel={activePanel} hidePanels={["settings", "help"]} onAction={onAction} />
       <div className="toolbox-extra-actions">
         <button
           className={`toolbox-action toolbox-settings-action ${activePanel === "settings" ? "active" : ""}`}

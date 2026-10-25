@@ -1,6 +1,4 @@
-import { DEFAULT_FOODS } from "../../config/defaultFoods";
-import { normalizeSettings } from "../../systems/settings/settingsService";
-import type { AppSettings, BootstrapPayload, CharacterProfile, ChatMessage, ChatSession, PetStats } from "../../types/domain";
+import type { BootstrapPayload, CharacterProfile, ChatMessage, ChatSession } from "../../types/domain";
 
 const now = new Date().toISOString();
 
@@ -19,23 +17,6 @@ export const mockCharacter: CharacterProfile = {
   createdAt: now,
   updatedAt: now,
 };
-
-export const mockStats: PetStats = {
-  characterId: mockCharacter.id,
-  energy: 60,
-  affection: 40,
-  todayChatRounds: 0,
-  todayInteractionCount: 0,
-  todayHadActivity: false,
-  reward50Triggered: false,
-  reward100Triggered: false,
-  lastChatAt: null,
-  lastDailySettlementAt: null,
-  lastWeeklyInventoryClearAt: null,
-  updatedAt: now,
-};
-
-export const mockSettings: AppSettings = normalizeSettings({});
 
 export const mockSession: ChatSession = {
   id: "mock-session",
@@ -66,7 +47,6 @@ export function createMockBootstrap(): BootstrapPayload {
       database: "Tauri appDataDir/bytepet-data/bytepet.db",
       settings: "settings",
       skins: "skins",
-      foodIcons: "food_icons",
       uploads: "uploads",
       exports: "exports",
       backups: "backups",
@@ -74,9 +54,6 @@ export function createMockBootstrap(): BootstrapPayload {
     },
     character: mockCharacter,
     characters: [mockCharacter],
-    stats: mockStats,
-    foods: DEFAULT_FOODS.map((food) => ({ ...food })),
-    settings: mockSettings,
     sessions: [mockSession],
     messages: mockMessages,
   };

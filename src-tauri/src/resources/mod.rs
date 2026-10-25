@@ -4,7 +4,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use serde::Serialize;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::database::{FrameAssetOption, SkinValidationIssue, SkinValidationReport};
 
@@ -19,7 +19,6 @@ pub struct DataPaths {
     pub database: String,
     pub settings: String,
     pub skins: String,
-    pub food_icons: String,
     pub uploads: String,
     pub exports: String,
     pub backups: String,
@@ -76,7 +75,6 @@ pub fn data_paths(app: &AppHandle) -> Result<DataPaths, String> {
     }
     let settings = safe_join(&root, "settings")?;
     let skins = safe_join(&root, "skins")?;
-    let food_icons = safe_join(&root, "food_icons")?;
     let uploads = safe_join(&root, "uploads")?;
     let exports = safe_join(&root, "exports")?;
     let backups = safe_join(&root, "backups")?;
@@ -87,7 +85,6 @@ pub fn data_paths(app: &AppHandle) -> Result<DataPaths, String> {
         database: database.to_string_lossy().to_string(),
         settings: settings.to_string_lossy().to_string(),
         skins: skins.to_string_lossy().to_string(),
-        food_icons: food_icons.to_string_lossy().to_string(),
         uploads: uploads.to_string_lossy().to_string(),
         exports: exports.to_string_lossy().to_string(),
         backups: backups.to_string_lossy().to_string(),
@@ -101,7 +98,6 @@ pub fn ensure_data_dirs(app: &AppHandle) -> Result<DataPaths, String> {
         &paths.root,
         &paths.settings,
         &paths.skins,
-        &paths.food_icons,
         &paths.uploads,
         &paths.exports,
         &paths.backups,
@@ -139,7 +135,7 @@ pub fn open_data_dir(app: &AppHandle) -> Result<String, String> {
         .map_err(|error| error.to_string())?;
 
     #[cfg(target_os = "macos")]
-    Command::new("open")
+    Command::new("/usr/bin/open")
         .arg(&root)
         .spawn()
         .map_err(|error| error.to_string())?;
@@ -184,7 +180,7 @@ pub fn list_frame_assets(app: &AppHandle) -> Result<Vec<FrameAssetOption>, Strin
         }
         let path = entry.path();
         let folder_id = entry.file_name().to_string_lossy().to_string();
-        if folder_id == "rick_default" {
+        if folder_id == "rick_default" || folder_id.starts_with('.') {
             continue;
         }
         let report = validate_skin_path(app, &path)?;
@@ -244,6 +240,7 @@ pub fn choose_and_import_frame_asset(app: &AppHandle) -> Result<Option<FrameAsse
         let _ = window.set_ignore_cursor_events(false);
         let _ = window.set_always_on_top(true);
         let _ = window.set_focus();
+        let _ = app.emit("cursor-state-reset", ());
     }
 
     let Some(source) = selected else {
@@ -298,7 +295,6 @@ pub fn import_frame_asset(app: &AppHandle, source: &Path) -> Result<FrameAssetOp
             short_action_keys: action_keys,
         });
     }
-    replace_frame_asset_dir(&source, &target, &action_keys)?;
 
     let name = source
         .file_name()
@@ -313,11 +309,7 @@ pub fn import_frame_asset(app: &AppHandle, source: &Path) -> Result<FrameAssetOp
         "source": source.to_string_lossy().to_string(),
         "shortActionKeys": action_keys
     });
-    fs::write(
-        target.join("asset.json"),
-        serde_json::to_string_pretty(&metadata).map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
+    replace_frame_asset_dir(&source, &target, &action_keys, &metadata)?;
 
     Ok(FrameAssetOption {
         id,
@@ -356,11 +348,11 @@ pub fn delete_frame_asset(
         return Err("系统素材包不能删除。".to_string());
     }
 
-    let target = asset
-        .path
-        .as_ref()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| user_skins_root(app).map(|root| root.join(id)).unwrap_or_default());
+    let target = asset.path.as_ref().map(PathBuf::from).unwrap_or_else(|| {
+        user_skins_root(app)
+            .map(|root| root.join(id))
+            .unwrap_or_default()
+    });
     if !target.is_dir() {
         return Err("素材包目录不存在。".to_string());
     }
@@ -414,13 +406,6 @@ fn paths_equal(left: &Path, right: &Path) -> bool {
         (Ok(left), Ok(right)) => left == right,
         _ => false,
     }
-}
-
-fn remove_dir_if_exists(path: &Path) -> Result<(), String> {
-    if path.exists() {
-        fs::remove_dir_all(path).map_err(|error| error.to_string())?;
-    }
-    Ok(())
 }
 
 fn looks_like_frame_asset_root(path: &Path) -> bool {
@@ -479,21 +464,69 @@ fn copy_frame_sequence(
     Ok(())
 }
 
+// Build a complete sibling directory before touching an existing import.
+fn replace_directory_atomically(
+    target: &Path,
+    prepare: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<(), String> {
+    let parent = target.parent().ok_or("素材目录没有父目录。")?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let token = uuid::Uuid::new_v4();
+    let staging = parent.join(format!(".import-{token}"));
+    let backup = parent.join(format!(".backup-{token}"));
+    fs::create_dir(&staging).map_err(|error| error.to_string())?;
+    if let Err(error) = prepare(&staging) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(error);
+    }
+    let had_target = target.exists();
+    if had_target {
+        if let Err(error) = fs::rename(target, &backup) {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error.to_string());
+        }
+    }
+    if let Err(error) = fs::rename(&staging, target) {
+        let restored = !had_target || fs::rename(&backup, target).is_ok();
+        let _ = fs::remove_dir_all(&staging);
+        return Err(if restored {
+            error.to_string()
+        } else {
+            format!("导入失败，旧素材保留在 {}：{error}", backup.display())
+        });
+    }
+    if had_target {
+        let _ = fs::remove_dir_all(&backup);
+    }
+    Ok(())
+}
+
 fn replace_frame_asset_dir(
     source: &Path,
     target: &Path,
     action_keys: &[String],
+    metadata: &serde_json::Value,
 ) -> Result<(), String> {
-    remove_dir_if_exists(target)?;
-    fs::create_dir_all(target).map_err(|error| error.to_string())?;
-    for (state_key, frames) in expected_frame_states() {
-        copy_frame_sequence(source, target, state_key, *frames)?;
+    if let (Ok(source), Ok(target)) = (source.canonicalize(), target.canonicalize()) {
+        if source.starts_with(&target) {
+            return Err("不能从待覆盖素材目录内部导入，请先复制到其他文件夹。".to_string());
+        }
     }
-    for action_key in action_keys {
-        copy_frame_sequence(source, target, action_key, 6)?;
-    }
-    copy_frame_sequence(source, target, "box", 1)?;
-    Ok(())
+    replace_directory_atomically(target, |staging| {
+        for (state_key, frames) in expected_frame_states() {
+            copy_frame_sequence(source, staging, state_key, *frames)?;
+        }
+        for action_key in action_keys {
+            copy_frame_sequence(source, staging, action_key, 6)?;
+        }
+        copy_frame_sequence(source, staging, "box", 1)?;
+        fs::write(
+            staging.join("asset.json"),
+            serde_json::to_vec_pretty(metadata).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })
 }
 
 fn default_short_action_keys() -> Vec<String> {
@@ -620,7 +653,6 @@ fn expected_frame_states() -> &'static [(&'static str, usize)] {
         ("angry", 6),
         ("comfort", 6),
         ("thinking", 6),
-        ("eat_food", 6),
         ("run_left", 4),
         ("run_right", 4),
         ("fly_up", 6),
@@ -772,4 +804,49 @@ pub fn validate_skin_path(_app: &AppHandle, path: &Path) -> Result<SkinValidatio
         frame_width: expected_size.map(|size| size.0),
         frame_height: expected_size.map(|size| size.1),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_import_keeps_previous_files_and_metadata() {
+        let root = std::env::temp_dir().join(format!("bytepet-test-{}", uuid::Uuid::new_v4()));
+        let target = root.join("pet");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("old.png"), b"old-image").unwrap();
+        fs::write(target.join("asset.json"), b"old-metadata").unwrap();
+        let result = replace_directory_atomically(&target, |staging| {
+            fs::write(staging.join("partial.png"), b"partial").unwrap();
+            Err("simulated copy failure".into())
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(target.join("old.png")).unwrap(), b"old-image");
+        assert_eq!(
+            fs::read(target.join("asset.json")).unwrap(),
+            b"old-metadata"
+        );
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn successful_import_publishes_complete_directory() {
+        let root = std::env::temp_dir().join(format!("bytepet-test-{}", uuid::Uuid::new_v4()));
+        let target = root.join("pet");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("old.png"), b"old").unwrap();
+        replace_directory_atomically(&target, |staging| {
+            fs::write(staging.join("new.png"), b"new").map_err(|e| e.to_string())?;
+            fs::write(staging.join("asset.json"), b"metadata").map_err(|e| e.to_string())?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(!target.join("old.png").exists());
+        assert_eq!(fs::read(target.join("new.png")).unwrap(), b"new");
+        assert!(target.join("asset.json").exists());
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
 }

@@ -1,4 +1,4 @@
-export type ActivePanel = "stats" | "chat" | "feed" | "skin" | "settings" | "memory" | "theme";
+export type ActivePanel = "chat" | "skin" | "settings" | "memory" | "theme" | "help" | "welcome";
 
 export type ChatRole = "user" | "assistant" | "system";
 
@@ -7,7 +7,6 @@ export interface DataPaths {
   database: string;
   settings: string;
   skins: string;
-  foodIcons: string;
   uploads: string;
   exports: string;
   backups: string;
@@ -26,40 +25,6 @@ export interface CharacterProfile {
   openingLine: string;
   displayScale: number;
   isActive: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface PetStats {
-  characterId: string;
-  energy: number;
-  affection: number;
-  todayChatRounds: number;
-  todayInteractionCount: number;
-  todayHadActivity: boolean;
-  reward50Triggered: boolean;
-  reward100Triggered: boolean;
-  lastChatAt: string | null;
-  lastDailySettlementAt: string | null;
-  lastWeeklyInventoryClearAt: string | null;
-  updatedAt: string;
-}
-
-export interface FoodItem {
-  id: string;
-  characterId: string;
-  slotId: number;
-  foodLevel: 0 | 1 | 2 | 3;
-  displayOrder: number;
-  name: string;
-  iconPath: string | null;
-  energyDelta: number;
-  affectionDelta: number;
-  category: string;
-  rarity: string;
-  description: string;
-  enabled: boolean;
-  count: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -92,53 +57,12 @@ export interface ChatHistoryDay {
   lastMessageAt: string;
 }
 
-export interface AppSettings {
-  apiKey: string;
-  provider: string;
-  modelName: string;
-  autoStart: boolean;
-  soundEnabled: boolean;
-  ttsEnabled: boolean;
-  volume: number;
-  notificationPrefs: {
-    foodDrops: boolean;
-    errors: boolean;
-    reminders: boolean;
-  };
-  privacyLock: boolean;
-}
-
 export interface BootstrapPayload {
   dataPaths: DataPaths;
   character: CharacterProfile;
   characters: CharacterProfile[];
-  stats: PetStats;
-  foods: FoodItem[];
-  settings: AppSettings;
   sessions: ChatSession[];
   messages: ChatMessage[];
-}
-
-export interface ChatSendResult {
-  session: ChatSession;
-  userMessage: ChatMessage;
-  assistantMessage: ChatMessage;
-  stats: PetStats;
-  foods: FoodItem[];
-  triggeredStateKey: string;
-}
-
-export interface FeedResult {
-  food: FoodItem;
-  stats: PetStats;
-  triggeredStateKey: "feed_neutral" | "feed_blocked";
-  message: string;
-}
-
-export interface FoodReplaceRequest {
-  foodId: string;
-  name: string;
-  iconDataUrl: string;
 }
 
 export interface CreateCharacterRequest {
@@ -182,6 +106,7 @@ export interface ScreenInfo {
   screen_height: number;
   taskbar_height: number;
   scale_factor: number;
+  work_area?: { left: number; top: number; right: number; bottom: number };
 }
 
 // ==================== AI Provider Types ====================
@@ -198,6 +123,7 @@ export interface AiProviderConfig {
   maxOutputTokens: number;
   timeoutMs: number;
   hasApiKey: boolean;
+  apiKeyHint?: string | null;
   isActive: boolean;
   updatedAt: number;
 }
@@ -209,7 +135,6 @@ export interface SaveAiProviderRequest {
   baseUrl: string;
   model: string;
   apiKey?: string;
-  enabled?: boolean;
   stream?: boolean;
   temperature?: number;
   maxOutputTokens?: number;
@@ -224,4 +149,5 @@ export interface AiChatEvent {
   full_response?: string;
   action?: "calm" | "happy" | "sad" | "angry" | "comfort" | "cheer_up" | string;
   message?: string;
+  user_message?: ChatMessage;
 }

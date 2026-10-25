@@ -1,6 +1,4 @@
-use chrono::{DateTime, Datelike, Duration, Local, NaiveTime, TimeZone, Weekday};
-use rand::seq::SliceRandom;
-use rand::Rng;
+use chrono::Local;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -8,6 +6,9 @@ use tauri::AppHandle;
 use uuid::Uuid;
 
 use crate::resources::{self, DataPaths};
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,47 +22,8 @@ pub struct CharacterProfile {
     pub description: String,
     pub personality_tags: Vec<String>,
     pub opening_line: String,
-    pub favorite_slot_ids: Vec<i64>,
     pub display_scale: f64,
     pub is_active: bool,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PetStats {
-    pub character_id: String,
-    pub energy: f64,
-    pub affection: f64,
-    pub today_chat_rounds: i64,
-    pub today_interaction_count: i64,
-    pub today_had_activity: bool,
-    pub reward_50_triggered: bool,
-    pub reward_100_triggered: bool,
-    pub last_chat_at: Option<String>,
-    pub last_daily_settlement_at: Option<String>,
-    pub last_weekly_inventory_clear_at: Option<String>,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FoodItem {
-    pub id: String,
-    pub character_id: String,
-    pub slot_id: i64,
-    pub food_level: i64,
-    pub display_order: i64,
-    pub name: String,
-    pub icon_path: Option<String>,
-    pub energy_delta: f64,
-    pub affection_delta: f64,
-    pub category: String,
-    pub rarity: String,
-    pub description: String,
-    pub enabled: bool,
-    pub count: i64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -100,67 +62,14 @@ pub struct ChatHistoryDay {
     pub last_message_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NotificationPrefs {
-    pub food_drops: bool,
-    pub errors: bool,
-    pub reminders: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AppSettings {
-    pub api_key: String,
-    pub provider: String,
-    pub model_name: String,
-    pub auto_start: bool,
-    pub sound_enabled: bool,
-    pub tts_enabled: bool,
-    pub volume: i64,
-    pub notification_prefs: NotificationPrefs,
-    pub privacy_lock: bool,
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BootstrapPayload {
     pub data_paths: DataPaths,
     pub character: CharacterProfile,
     pub characters: Vec<CharacterProfile>,
-    pub stats: PetStats,
-    pub foods: Vec<FoodItem>,
-    pub settings: AppSettings,
     pub sessions: Vec<ChatSession>,
     pub messages: Vec<ChatMessage>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatSendResult {
-    pub session: ChatSession,
-    pub user_message: ChatMessage,
-    pub assistant_message: ChatMessage,
-    pub stats: PetStats,
-    pub foods: Vec<FoodItem>,
-    pub triggered_state_key: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FeedResult {
-    pub food: FoodItem,
-    pub stats: PetStats,
-    pub triggered_state_key: String,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FoodReplaceRequest {
-    pub food_id: String,
-    pub name: String,
-    pub icon_data_url: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -224,58 +133,6 @@ fn now_string() -> String {
     Local::now().to_rfc3339()
 }
 
-fn local_date_key() -> String {
-    business_date_for(Local::now())
-}
-
-fn clamp(value: f64, min: f64, max: f64) -> f64 {
-    value.max(min).min(max)
-}
-
-const ENERGY_DEFAULT: f64 = 60.0;
-const FOOD_DROP_CHANCE: f64 = 0.15;
-const DAILY_SETTLEMENT_HOUR: u32 = 6;
-
-fn food_effect(food_level: i64) -> (f64, f64) {
-    match food_level {
-        0 => (5.0, -2.0),
-        1 => (2.0, 0.0),
-        2 => (5.0, 0.0),
-        _ => (10.0, 0.0),
-    }
-}
-
-fn business_date_for(dt: DateTime<Local>) -> String {
-    let cutoff = Local
-        .with_ymd_and_hms(dt.year(), dt.month(), dt.day(), DAILY_SETTLEMENT_HOUR, 0, 0)
-        .single()
-        .unwrap_or(dt);
-    let date = if dt < cutoff {
-        dt.date_naive() - Duration::days(1)
-    } else {
-        dt.date_naive()
-    };
-    date.format("%Y-%m-%d").to_string()
-}
-
-fn settlement_time_for_date(date: chrono::NaiveDate) -> DateTime<Local> {
-    Local
-        .from_local_datetime(
-            &date.and_time(NaiveTime::from_hms_opt(DAILY_SETTLEMENT_HOUR, 0, 0).unwrap()),
-        )
-        .single()
-        .unwrap_or_else(Local::now)
-}
-
-fn next_settlement_after(last: DateTime<Local>) -> DateTime<Local> {
-    let today_cutoff = settlement_time_for_date(last.date_naive());
-    if last < today_cutoff {
-        today_cutoff
-    } else {
-        settlement_time_for_date(last.date_naive() + Duration::days(1))
-    }
-}
-
 fn db_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(resources::data_root(app)?.join("bytepet.db"))
 }
@@ -284,7 +141,8 @@ fn open_connection(app: &AppHandle) -> Result<Connection, String> {
     resources::ensure_data_dirs(app)?;
     let connection = Connection::open(db_path(app)?).map_err(|error| error.to_string())?;
     connection
-        .pragma_update(None, "foreign_keys", "ON")
+        .pragma_update(None, "secure_delete", "ON")
+        .and_then(|_| connection.pragma_update(None, "foreign_keys", "ON"))
         .map_err(|error| error.to_string())?;
     Ok(connection)
 }
@@ -295,9 +153,8 @@ pub fn bootstrap(app: &AppHandle) -> Result<BootstrapPayload, String> {
     migrate(&connection)?;
     seed_defaults(app, &connection)?;
     repair_character_integrity(app, &connection)?;
-    seed_foods_for_all_characters(&connection, &now_string())?;
-    run_due_settlements(&connection)?;
-    repair_character_integrity(app, &connection)?;
+    migrate_ai_connections(&connection)?;
+    migrate_api_credentials(&connection)?;
     fetch_bootstrap(app, &connection)
 }
 
@@ -349,60 +206,6 @@ fn migrate(connection: &Connection) -> Result<(), String> {
               FOREIGN KEY(character_id) REFERENCES characters(id) ON DELETE CASCADE
             );
 
-            CREATE TABLE IF NOT EXISTS pet_stats (
-              character_id TEXT PRIMARY KEY,
-              energy REAL NOT NULL CHECK(energy >= 0 AND energy <= 100),
-              affection REAL NOT NULL CHECK(affection >= 0 AND affection <= 100),
-              today_chat_rounds INTEGER NOT NULL DEFAULT 0,
-              today_interaction_count INTEGER NOT NULL DEFAULT 0,
-              today_had_activity INTEGER NOT NULL DEFAULT 0,
-              reward_50_triggered INTEGER NOT NULL DEFAULT 0,
-              reward_100_triggered INTEGER NOT NULL DEFAULT 0,
-              last_chat_at TEXT,
-              last_daily_settlement_at TEXT,
-              last_weekly_inventory_clear_at TEXT,
-              updated_at TEXT NOT NULL,
-              FOREIGN KEY(character_id) REFERENCES characters(id) ON DELETE CASCADE
-            );
-
-            CREATE TABLE IF NOT EXISTS foods (
-              id TEXT PRIMARY KEY,
-              character_id TEXT NOT NULL,
-              slot_id INTEGER NOT NULL CHECK(slot_id >= 1 AND slot_id <= 9),
-              food_level INTEGER NOT NULL DEFAULT 1 CHECK(food_level >= 0 AND food_level <= 3),
-              display_order INTEGER NOT NULL DEFAULT 1,
-              name TEXT NOT NULL,
-              icon_path TEXT,
-              energy_delta REAL NOT NULL,
-              affection_delta REAL NOT NULL,
-              category TEXT NOT NULL,
-              rarity TEXT NOT NULL,
-              description TEXT NOT NULL,
-              enabled INTEGER NOT NULL DEFAULT 1,
-              created_at TEXT NOT NULL,
-              updated_at TEXT NOT NULL,
-              UNIQUE(character_id, slot_id),
-              FOREIGN KEY(character_id) REFERENCES characters(id) ON DELETE CASCADE
-            );
-
-            CREATE TABLE IF NOT EXISTS food_inventory (
-              character_id TEXT NOT NULL,
-              food_id TEXT NOT NULL,
-              count INTEGER NOT NULL DEFAULT 0 CHECK(count >= 0),
-              updated_at TEXT NOT NULL,
-              PRIMARY KEY(character_id, food_id),
-              FOREIGN KEY(character_id) REFERENCES characters(id) ON DELETE CASCADE,
-              FOREIGN KEY(food_id) REFERENCES foods(id) ON DELETE CASCADE
-            );
-
-            CREATE TABLE IF NOT EXISTS favorite_food_slots (
-              character_id TEXT NOT NULL,
-              slot_id INTEGER NOT NULL CHECK(slot_id >= 1 AND slot_id <= 12),
-              created_at TEXT NOT NULL,
-              PRIMARY KEY(character_id, slot_id),
-              FOREIGN KEY(character_id) REFERENCES characters(id) ON DELETE CASCADE
-            );
-
             CREATE TABLE IF NOT EXISTS skins (
               id TEXT PRIMARY KEY,
               name TEXT NOT NULL,
@@ -421,19 +224,6 @@ fn migrate(connection: &Connection) -> Result<(), String> {
               key TEXT PRIMARY KEY,
               value_json TEXT NOT NULL,
               updated_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS daily_activity (
-              date TEXT NOT NULL,
-              character_id TEXT NOT NULL,
-              chat_round_count INTEGER NOT NULL DEFAULT 0,
-              interaction_count INTEGER NOT NULL DEFAULT 0,
-              food_generated_count INTEGER NOT NULL DEFAULT 0,
-              affection_delta REAL NOT NULL DEFAULT 0,
-              energy_delta REAL NOT NULL DEFAULT 0,
-              settled_at TEXT,
-              PRIMARY KEY(date, character_id),
-              FOREIGN KEY(character_id) REFERENCES characters(id) ON DELETE CASCADE
             );
 
             CREATE TABLE IF NOT EXISTS ai_provider_configs (
@@ -465,8 +255,6 @@ fn migrate(connection: &Connection) -> Result<(), String> {
         )
         .map_err(|error| error.to_string())?;
     ensure_legacy_columns(connection)?;
-    migrate_food_tables_to_character_scope(connection)?;
-    ensure_food_indexes(connection)?;
     remove_legacy_settings_api_key(connection)?;
     Ok(())
 }
@@ -481,21 +269,6 @@ fn table_columns(connection: &Connection, table: &str) -> Result<Vec<String>, St
         .collect::<rusqlite::Result<Vec<String>>>()
         .map_err(|error| error.to_string())?;
     Ok(columns)
-}
-
-fn food_id_for_character_slot(character_id: &str, slot_id: i64) -> String {
-    format!("food::{character_id}::slot::{slot_id}")
-}
-
-fn ensure_food_indexes(connection: &Connection) -> Result<(), String> {
-    connection
-        .execute_batch(
-            r#"
-            CREATE INDEX IF NOT EXISTS idx_foods_character ON foods(character_id);
-            CREATE INDEX IF NOT EXISTS idx_food_inventory_character ON food_inventory(character_id);
-            "#,
-        )
-        .map_err(|error| error.to_string())
 }
 
 fn remove_legacy_settings_api_key(connection: &Connection) -> Result<(), String> {
@@ -555,423 +328,7 @@ fn ensure_legacy_columns(connection: &Connection) -> Result<(), String> {
         "ALTER TABLE chat_sessions ADD COLUMN summary TEXT NOT NULL DEFAULT '';",
     )?;
 
-    ensure_column(
-        connection,
-        "pet_stats",
-        "affection",
-        "ALTER TABLE pet_stats ADD COLUMN affection REAL NOT NULL DEFAULT 40;",
-    )?;
-    ensure_column(
-        connection,
-        "pet_stats",
-        "today_chat_rounds",
-        "ALTER TABLE pet_stats ADD COLUMN today_chat_rounds INTEGER NOT NULL DEFAULT 0;",
-    )?;
-    ensure_column(
-        connection,
-        "pet_stats",
-        "today_interaction_count",
-        "ALTER TABLE pet_stats ADD COLUMN today_interaction_count INTEGER NOT NULL DEFAULT 0;",
-    )?;
-    ensure_column(
-        connection,
-        "pet_stats",
-        "today_had_activity",
-        "ALTER TABLE pet_stats ADD COLUMN today_had_activity INTEGER NOT NULL DEFAULT 0;",
-    )?;
-    ensure_column(
-        connection,
-        "pet_stats",
-        "reward_50_triggered",
-        "ALTER TABLE pet_stats ADD COLUMN reward_50_triggered INTEGER NOT NULL DEFAULT 0;",
-    )?;
-    ensure_column(
-        connection,
-        "pet_stats",
-        "reward_100_triggered",
-        "ALTER TABLE pet_stats ADD COLUMN reward_100_triggered INTEGER NOT NULL DEFAULT 0;",
-    )?;
-    ensure_column(
-        connection,
-        "pet_stats",
-        "last_chat_at",
-        "ALTER TABLE pet_stats ADD COLUMN last_chat_at TEXT;",
-    )?;
-    ensure_column(
-        connection,
-        "pet_stats",
-        "last_daily_settlement_at",
-        "ALTER TABLE pet_stats ADD COLUMN last_daily_settlement_at TEXT;",
-    )?;
-    ensure_column(
-        connection,
-        "pet_stats",
-        "last_weekly_inventory_clear_at",
-        "ALTER TABLE pet_stats ADD COLUMN last_weekly_inventory_clear_at TEXT;",
-    )?;
-
-    let columns = table_columns(connection, "pet_stats")?;
-    if columns.iter().any(|name| name == "favorability") {
-        connection
-            .execute_batch(
-                "UPDATE pet_stats
-                 SET affection=favorability
-                 WHERE affection=40;",
-            )
-            .map_err(|error| error.to_string())?;
-    }
-    if columns.iter().any(|name| name == "today_chat_count") {
-        connection
-            .execute_batch("UPDATE pet_stats SET today_chat_rounds=today_chat_count WHERE today_chat_rounds=0;")
-            .map_err(|error| error.to_string())?;
-    }
-    if columns.iter().any(|name| name == "last_chat_date") {
-        connection
-            .execute_batch(
-                "UPDATE pet_stats SET last_chat_at=last_chat_date WHERE last_chat_at IS NULL;",
-            )
-            .map_err(|error| error.to_string())?;
-    }
-    if columns
-        .iter()
-        .any(|name| name == "last_daily_settlement_date")
-    {
-        connection
-            .execute_batch("UPDATE pet_stats SET last_daily_settlement_at=last_daily_settlement_date WHERE last_daily_settlement_at IS NULL;")
-            .map_err(|error| error.to_string())?;
-    }
-    if columns.iter().any(|name| name == "temperature") {
-        connection
-            .execute_batch("ALTER TABLE pet_stats DROP COLUMN temperature;")
-            .map_err(|error| error.to_string())?;
-    }
-
-    ensure_column(
-        connection,
-        "foods",
-        "food_level",
-        "ALTER TABLE foods ADD COLUMN food_level INTEGER NOT NULL DEFAULT 1;",
-    )?;
-    ensure_column(
-        connection,
-        "foods",
-        "display_order",
-        "ALTER TABLE foods ADD COLUMN display_order INTEGER NOT NULL DEFAULT 1;",
-    )?;
-    ensure_column(
-        connection,
-        "foods",
-        "icon_path",
-        "ALTER TABLE foods ADD COLUMN icon_path TEXT;",
-    )?;
-    ensure_column(
-        connection,
-        "foods",
-        "energy_delta",
-        "ALTER TABLE foods ADD COLUMN energy_delta REAL NOT NULL DEFAULT 10;",
-    )?;
-    ensure_column(
-        connection,
-        "foods",
-        "affection_delta",
-        "ALTER TABLE foods ADD COLUMN affection_delta REAL NOT NULL DEFAULT 0;",
-    )?;
-    ensure_column(
-        connection,
-        "foods",
-        "category",
-        "ALTER TABLE foods ADD COLUMN category TEXT NOT NULL DEFAULT '鏁版嵁椋熺墿';",
-    )?;
-    ensure_column(
-        connection,
-        "foods",
-        "rarity",
-        "ALTER TABLE foods ADD COLUMN rarity TEXT NOT NULL DEFAULT 'common';",
-    )?;
-    ensure_column(
-        connection,
-        "foods",
-        "description",
-        "ALTER TABLE foods ADD COLUMN description TEXT NOT NULL DEFAULT '';",
-    )?;
-    ensure_column(
-        connection,
-        "foods",
-        "enabled",
-        "ALTER TABLE foods ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;",
-    )?;
-    ensure_column(
-        connection,
-        "foods",
-        "created_at",
-        "ALTER TABLE foods ADD COLUMN created_at TEXT NOT NULL DEFAULT '';",
-    )?;
-    ensure_column(
-        connection,
-        "foods",
-        "updated_at",
-        "ALTER TABLE foods ADD COLUMN updated_at TEXT NOT NULL DEFAULT '';",
-    )?;
-    let food_columns = table_columns(connection, "foods")?;
-    if food_columns.iter().any(|name| name == "favor_delta") {
-        connection
-            .execute_batch("UPDATE foods SET affection_delta=favor_delta WHERE affection_delta=0;")
-            .map_err(|error| error.to_string())?;
-    }
-    ensure_column(
-        connection,
-        "daily_activity",
-        "chat_round_count",
-        "ALTER TABLE daily_activity ADD COLUMN chat_round_count INTEGER NOT NULL DEFAULT 0;",
-    )?;
-    ensure_column(
-        connection,
-        "daily_activity",
-        "interaction_count",
-        "ALTER TABLE daily_activity ADD COLUMN interaction_count INTEGER NOT NULL DEFAULT 0;",
-    )?;
-    let daily_columns = table_columns(connection, "daily_activity")?;
-    if daily_columns.iter().any(|name| name == "chat_count") {
-        connection
-            .execute_batch(
-                "UPDATE daily_activity SET chat_round_count=chat_count WHERE chat_round_count=0;",
-            )
-            .map_err(|error| error.to_string())?;
-    }
-
-    Ok(())
-}
-
-struct FoodMigrationRow {
-    id: String,
-    character_id: String,
-    slot_id: i64,
-    food_level: i64,
-    display_order: i64,
-    name: String,
-    icon_path: Option<String>,
-    energy_delta: f64,
-    affection_delta: f64,
-    category: String,
-    rarity: String,
-    description: String,
-    enabled: i64,
-    count: i64,
-    created_at: String,
-    updated_at: String,
-}
-
-fn active_or_first_character_id(connection: &Connection) -> Result<Option<String>, String> {
-    let active = connection
-        .query_row(
-            "SELECT id FROM characters WHERE is_active=1 LIMIT 1",
-            [],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(|error| error.to_string())?;
-    if active.is_some() {
-        return Ok(active);
-    }
-
-    connection
-        .query_row(
-            "SELECT id FROM characters ORDER BY updated_at DESC LIMIT 1",
-            [],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(|error| error.to_string())
-}
-
-fn create_character_scoped_food_tables(
-    connection: &Connection,
-    food_table: &str,
-    inventory_table: &str,
-) -> Result<(), String> {
-    connection
-        .execute_batch(&format!(
-            r#"
-            CREATE TABLE {food_table} (
-              id TEXT PRIMARY KEY,
-              character_id TEXT NOT NULL,
-              slot_id INTEGER NOT NULL CHECK(slot_id >= 1 AND slot_id <= 9),
-              food_level INTEGER NOT NULL DEFAULT 1 CHECK(food_level >= 0 AND food_level <= 3),
-              display_order INTEGER NOT NULL DEFAULT 1,
-              name TEXT NOT NULL,
-              icon_path TEXT,
-              energy_delta REAL NOT NULL,
-              affection_delta REAL NOT NULL,
-              category TEXT NOT NULL,
-              rarity TEXT NOT NULL,
-              description TEXT NOT NULL,
-              enabled INTEGER NOT NULL DEFAULT 1,
-              created_at TEXT NOT NULL,
-              updated_at TEXT NOT NULL,
-              UNIQUE(character_id, slot_id),
-              FOREIGN KEY(character_id) REFERENCES characters(id) ON DELETE CASCADE
-            );
-
-            CREATE TABLE {inventory_table} (
-              character_id TEXT NOT NULL,
-              food_id TEXT NOT NULL,
-              count INTEGER NOT NULL DEFAULT 0 CHECK(count >= 0),
-              updated_at TEXT NOT NULL,
-              PRIMARY KEY(character_id, food_id),
-              FOREIGN KEY(character_id) REFERENCES characters(id) ON DELETE CASCADE,
-              FOREIGN KEY(food_id) REFERENCES {food_table}(id) ON DELETE CASCADE
-            );
-            "#
-        ))
-        .map_err(|error| error.to_string())
-}
-
-fn migrate_food_tables_to_character_scope(connection: &Connection) -> Result<(), String> {
-    let food_columns = table_columns(connection, "foods")?;
-    let inventory_columns = table_columns(connection, "food_inventory")?;
-    let foods_are_scoped = food_columns.iter().any(|name| name == "character_id");
-    let inventory_is_scoped = inventory_columns.iter().any(|name| name == "character_id");
-    if foods_are_scoped && inventory_is_scoped {
-        return Ok(());
-    }
-
-    let Some(default_character_id) = active_or_first_character_id(connection)? else {
-        return Ok(());
-    };
-    let now = now_string();
-
-    let rows = if foods_are_scoped {
-        let join = if inventory_is_scoped {
-            "LEFT JOIN food_inventory i ON i.food_id=f.id AND i.character_id=f.character_id"
-        } else {
-            "LEFT JOIN food_inventory i ON i.food_id=f.id"
-        };
-        let mut statement = connection
-            .prepare(&format!(
-                "SELECT f.id,f.character_id,f.slot_id,f.food_level,f.display_order,f.name,f.icon_path,
-                        f.energy_delta,f.affection_delta,f.category,f.rarity,f.description,f.enabled,
-                        COALESCE(i.count,0),f.created_at,f.updated_at
-                 FROM foods f {join}"
-            ))
-            .map_err(|error| error.to_string())?;
-        let items = statement
-            .query_map([], |row| {
-                Ok(FoodMigrationRow {
-                    id: row.get(0)?,
-                    character_id: row.get(1)?,
-                    slot_id: row.get(2)?,
-                    food_level: row.get(3)?,
-                    display_order: row.get(4)?,
-                    name: row.get(5)?,
-                    icon_path: row.get(6)?,
-                    energy_delta: row.get(7)?,
-                    affection_delta: row.get(8)?,
-                    category: row.get(9)?,
-                    rarity: row.get(10)?,
-                    description: row.get(11)?,
-                    enabled: row.get(12)?,
-                    count: row.get(13)?,
-                    created_at: row.get(14)?,
-                    updated_at: row.get(15)?,
-                })
-            })
-            .map_err(|error| error.to_string())?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|error| error.to_string())?;
-        items
-    } else {
-        let mut statement = connection
-            .prepare(
-                "SELECT f.id,f.slot_id,f.food_level,f.display_order,f.name,f.icon_path,
-                        f.energy_delta,f.affection_delta,f.category,f.rarity,f.description,f.enabled,
-                        COALESCE(i.count,0),f.created_at,f.updated_at
-                 FROM foods f LEFT JOIN food_inventory i ON i.food_id=f.id",
-            )
-            .map_err(|error| error.to_string())?;
-        let items = statement
-            .query_map([], |row| {
-                Ok(FoodMigrationRow {
-                    id: row.get(0)?,
-                    character_id: default_character_id.clone(),
-                    slot_id: row.get(1)?,
-                    food_level: row.get(2)?,
-                    display_order: row.get(3)?,
-                    name: row.get(4)?,
-                    icon_path: row.get(5)?,
-                    energy_delta: row.get(6)?,
-                    affection_delta: row.get(7)?,
-                    category: row.get(8)?,
-                    rarity: row.get(9)?,
-                    description: row.get(10)?,
-                    enabled: row.get(11)?,
-                    count: row.get(12)?,
-                    created_at: row.get(13)?,
-                    updated_at: row.get(14)?,
-                })
-            })
-            .map_err(|error| error.to_string())?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|error| error.to_string())?;
-        items
-    };
-
-    create_character_scoped_food_tables(
-        connection,
-        "foods_scoped_new",
-        "food_inventory_scoped_new",
-    )?;
-
-    for row in rows {
-        let food_id = if foods_are_scoped && row.id.starts_with("food::") {
-            row.id
-        } else {
-            food_id_for_character_slot(&row.character_id, row.slot_id)
-        };
-        connection
-            .execute(
-                "INSERT OR REPLACE INTO foods_scoped_new(id,character_id,slot_id,food_level,display_order,name,icon_path,energy_delta,affection_delta,category,rarity,description,enabled,created_at,updated_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
-                params![
-                    food_id,
-                    row.character_id,
-                    row.slot_id,
-                    row.food_level,
-                    row.display_order,
-                    row.name,
-                    row.icon_path,
-                    row.energy_delta,
-                    row.affection_delta,
-                    row.category,
-                    row.rarity,
-                    row.description,
-                    row.enabled,
-                    if row.created_at.is_empty() { now.clone() } else { row.created_at },
-                    if row.updated_at.is_empty() { now.clone() } else { row.updated_at },
-                ],
-            )
-            .map_err(|error| error.to_string())?;
-        connection
-            .execute(
-                "INSERT OR REPLACE INTO food_inventory_scoped_new(character_id,food_id,count,updated_at)
-                 VALUES (?1,?2,?3,?4)",
-                params![row.character_id, food_id, row.count.max(0), now],
-            )
-            .map_err(|error| error.to_string())?;
-    }
-
-    connection
-        .execute_batch(
-            r#"
-            DROP TABLE food_inventory;
-            DROP TABLE foods;
-            ALTER TABLE foods_scoped_new RENAME TO foods;
-            ALTER TABLE food_inventory_scoped_new RENAME TO food_inventory;
-            CREATE INDEX IF NOT EXISTS idx_foods_character ON foods(character_id);
-            CREATE INDEX IF NOT EXISTS idx_food_inventory_character ON food_inventory(character_id);
-            "#,
-        )
-        .map_err(|error| error.to_string())?;
-
+    // Removed care-system tables in older databases are retained without being read or updated.
     Ok(())
 }
 
@@ -1004,14 +361,6 @@ fn seed_defaults(app: &AppHandle, connection: &Connection) -> Result<(), String>
         )
         .map_err(|error| error.to_string())?;
 
-    connection
-        .execute(
-            "INSERT INTO pet_stats(character_id,energy,affection,today_chat_rounds,today_interaction_count,today_had_activity,reward_50_triggered,reward_100_triggered,last_chat_at,last_daily_settlement_at,last_weekly_inventory_clear_at,updated_at)
-             VALUES (?1,60,40,0,0,0,0,0,NULL,NULL,NULL,?2)",
-            params![character_id, now],
-        )
-        .map_err(|error| error.to_string())?;
-
     let paths = resources::data_paths(app)?;
     connection
         .execute(
@@ -1027,114 +376,7 @@ fn seed_defaults(app: &AppHandle, connection: &Connection) -> Result<(), String>
         )
         .map_err(|error| error.to_string())?;
 
-    seed_foods_for_character(connection, character_id, &now)?;
     seed_default_session(connection, character_id, &now)?;
-    save_settings_values(connection, &default_settings(), &now)?;
-    Ok(())
-}
-
-fn canonical_foods() -> [(i64, i64, &'static str, &'static str); 9] {
-    [
-        (
-            1,
-            0,
-            "调试苦瓜",
-            "0级食物：恢复 5 点能量，但会减少 2 点好感。",
-        ),
-        (2, 1, "数据饼干", "1级食物：恢复 2 点能量。"),
-        (3, 1, "像素糖", "1级食物：恢复 2 点能量。"),
-        (4, 1, "小电池", "1级食物：恢复 2 点能量。"),
-        (5, 2, "能量模块", "2级食物：恢复 5 点能量。"),
-        (6, 2, "代码曲奇", "2级食物：恢复 5 点能量。"),
-        (7, 2, "记忆果冻", "2级食物：恢复 5 点能量。"),
-        (8, 2, "云同步包", "2级食物：恢复 5 点能量。"),
-        (9, 3, "星核便当", "3级食物：恢复 10 点能量。"),
-    ]
-}
-
-fn legacy_food_name(slot_id: i64) -> &'static str {
-    match slot_id {
-        1 => "Debug Bittergourd",
-        2 => "Data Cookie",
-        3 => "Pixel Candy",
-        4 => "Tiny Battery",
-        5 => "Energy Module",
-        6 => "Code Cookie",
-        7 => "Memory Jelly",
-        8 => "Cloud Sync Pack",
-        9 => "Star Core Bento",
-        _ => "",
-    }
-}
-
-fn seed_foods_for_all_characters(connection: &Connection, now: &str) -> Result<(), String> {
-    let mut statement = connection
-        .prepare("SELECT id FROM characters")
-        .map_err(|error| error.to_string())?;
-    let character_ids = statement
-        .query_map([], |row| row.get::<_, String>(0))
-        .map_err(|error| error.to_string())?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|error| error.to_string())?;
-
-    for character_id in character_ids {
-        seed_foods_for_character(connection, &character_id, now)?;
-    }
-    Ok(())
-}
-
-fn seed_foods_for_character(
-    connection: &Connection,
-    character_id: &str,
-    now: &str,
-) -> Result<(), String> {
-    for food in canonical_foods() {
-        let (energy_delta, affection_delta) = food_effect(food.1);
-        let rarity = match food.1 {
-            3 => "legendary",
-            2 => "rare",
-            _ => "common",
-        };
-        let food_id = food_id_for_character_slot(character_id, food.0);
-        connection
-            .execute(
-                "INSERT INTO foods(id,character_id,slot_id,food_level,display_order,name,icon_path,energy_delta,affection_delta,category,rarity,description,enabled,created_at,updated_at)
-                 VALUES (?1,?2,?3,?4,?3,?5,NULL,?6,?7,?8,?9,?10,1,?11,?11)
-                 ON CONFLICT(id) DO UPDATE SET
-                   character_id=excluded.character_id,
-                   slot_id=excluded.slot_id,
-                   food_level=excluded.food_level,
-                   name=CASE WHEN foods.name=?12 THEN excluded.name ELSE foods.name END,
-                   energy_delta=excluded.energy_delta,
-                   affection_delta=excluded.affection_delta,
-                   category=excluded.category,
-                   rarity=excluded.rarity,
-                   description=excluded.description,
-                   enabled=1,
-                   updated_at=excluded.updated_at",
-                 params![
-                    food_id,
-                    character_id,
-                    food.0,
-                    food.1,
-                    food.2,
-                    energy_delta,
-                    affection_delta,
-                    format!("{}级食物", food.1),
-                    rarity,
-                    food.3,
-                    now,
-                    legacy_food_name(food.0)
-                 ],
-            )
-            .map_err(|error| error.to_string())?;
-        connection
-            .execute(
-                "INSERT OR IGNORE INTO food_inventory(character_id,food_id,count,updated_at) VALUES (?1,?2,0,?3)",
-                params![character_id, food_id, now],
-            )
-            .map_err(|error| error.to_string())?;
-    }
     Ok(())
 }
 
@@ -1187,14 +429,6 @@ fn seed_default_session(
 
 fn repair_character_integrity(app: &AppHandle, connection: &Connection) -> Result<(), String> {
     let now = now_string();
-    connection
-        .execute(
-            "INSERT OR IGNORE INTO pet_stats(character_id,energy,affection,today_chat_rounds,today_interaction_count,today_had_activity,reward_50_triggered,reward_100_triggered,last_chat_at,last_daily_settlement_at,last_weekly_inventory_clear_at,updated_at)
-             SELECT id,60,40,0,0,0,0,0,NULL,NULL,NULL,?1 FROM characters",
-            params![now],
-        )
-        .map_err(|error| error.to_string())?;
-
     let profiles = characters(connection)?;
     if profiles.is_empty() {
         return Ok(());
@@ -1243,63 +477,6 @@ fn repair_character_integrity(app: &AppHandle, connection: &Connection) -> Resul
                     .map_err(|error| error.to_string())?;
             }
         }
-
-        connection
-            .execute(
-                "INSERT OR IGNORE INTO pet_stats(character_id,energy,affection,today_chat_rounds,today_interaction_count,today_had_activity,reward_50_triggered,reward_100_triggered,last_chat_at,last_daily_settlement_at,last_weekly_inventory_clear_at,updated_at)
-                 VALUES (?1,60,40,0,0,0,0,0,NULL,NULL,NULL,?2)",
-                params![profile.id, now],
-            )
-            .map_err(|error| error.to_string())?;
-
-        seed_foods_for_character(connection, &profile.id, &now)?;
-    }
-
-    Ok(())
-}
-
-fn default_settings() -> AppSettings {
-    AppSettings {
-        api_key: String::new(),
-        provider: "openai_compatible".to_string(),
-        model_name: "gpt-4o".to_string(),
-        auto_start: false,
-        sound_enabled: true,
-        tts_enabled: false,
-        volume: 50,
-        notification_prefs: NotificationPrefs {
-            food_drops: true,
-            errors: true,
-            reminders: false,
-        },
-        privacy_lock: false,
-    }
-}
-
-fn save_settings_values(
-    connection: &Connection,
-    settings: &AppSettings,
-    now: &str,
-) -> Result<(), String> {
-    let pairs = [
-        ("provider", json!(settings.provider)),
-        ("modelName", json!(settings.model_name)),
-        ("autoStart", json!(settings.auto_start)),
-        ("soundEnabled", json!(settings.sound_enabled)),
-        ("ttsEnabled", json!(settings.tts_enabled)),
-        ("volume", json!(settings.volume)),
-        ("notificationPrefs", json!(settings.notification_prefs)),
-        ("privacyLock", json!(settings.privacy_lock)),
-    ];
-
-    for (key, value) in pairs {
-        connection
-            .execute(
-                "INSERT INTO settings(key,value_json,updated_at) VALUES (?1,?2,?3)
-                 ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at",
-                params![key, value.to_string(), now],
-            )
-            .map_err(|error| error.to_string())?;
     }
 
     Ok(())
@@ -1344,7 +521,6 @@ fn read_character(row: &rusqlite::Row<'_>) -> rusqlite::Result<CharacterProfile>
     let tags_json: String = row.get(7)?;
     let personality_tags = serde_json::from_str::<Vec<String>>(&tags_json).unwrap_or_default();
     Ok(CharacterProfile {
-        favorite_slot_ids: Vec::new(),
         id,
         name: row.get(1)?,
         skin_id: row.get(2)?,
@@ -1375,133 +551,6 @@ fn characters(connection: &Connection) -> Result<Vec<CharacterProfile>, String> 
         .map_err(|error| error.to_string())?;
 
     Ok(profiles)
-}
-
-fn stats(connection: &Connection, character_id: &str) -> Result<PetStats, String> {
-    let item = connection
-        .query_row(
-            "SELECT character_id,energy,affection,today_chat_rounds,today_interaction_count,today_had_activity,
-                    reward_50_triggered,reward_100_triggered,last_chat_at,last_daily_settlement_at,last_weekly_inventory_clear_at,updated_at
-             FROM pet_stats WHERE character_id=?1",
-            params![character_id],
-            |row| {
-                Ok(PetStats {
-                    character_id: row.get(0)?,
-                    energy: row.get(1)?,
-                    affection: row.get(2)?,
-                    today_chat_rounds: row.get(3)?,
-                    today_interaction_count: row.get(4)?,
-                    today_had_activity: row.get::<_, i64>(5)? == 1,
-                    reward_50_triggered: row.get::<_, i64>(6)? == 1,
-                    reward_100_triggered: row.get::<_, i64>(7)? == 1,
-                    last_chat_at: row.get(8)?,
-                    last_daily_settlement_at: row.get(9)?,
-                    last_weekly_inventory_clear_at: row.get(10)?,
-                    updated_at: row.get(11)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(|error| error.to_string())?;
-
-    if let Some(item) = item {
-        return Ok(item);
-    }
-
-    let now = now_string();
-    connection
-        .execute(
-            "INSERT OR IGNORE INTO pet_stats(character_id,energy,affection,today_chat_rounds,today_interaction_count,today_had_activity,reward_50_triggered,reward_100_triggered,last_chat_at,last_daily_settlement_at,last_weekly_inventory_clear_at,updated_at)
-             VALUES (?1,60,40,0,0,0,0,0,NULL,NULL,NULL,?2)",
-            params![character_id, now],
-        )
-        .map_err(|error| error.to_string())?;
-
-    Ok(PetStats {
-        character_id: character_id.to_string(),
-        energy: 60.0,
-        affection: 40.0,
-        today_chat_rounds: 0,
-        today_interaction_count: 0,
-        today_had_activity: false,
-        reward_50_triggered: false,
-        reward_100_triggered: false,
-        last_chat_at: None,
-        last_daily_settlement_at: None,
-        last_weekly_inventory_clear_at: None,
-        updated_at: now,
-    })
-}
-
-fn foods(connection: &Connection, character_id: &str) -> Result<Vec<FoodItem>, String> {
-    let mut statement = connection
-        .prepare(
-            "SELECT f.id,f.character_id,f.slot_id,f.food_level,f.display_order,f.name,f.icon_path,f.energy_delta,f.affection_delta,f.category,f.rarity,f.description,
-                    f.enabled,COALESCE(i.count,0),f.created_at,f.updated_at
-             FROM foods f LEFT JOIN food_inventory i ON i.food_id=f.id AND i.character_id=f.character_id
-             WHERE f.character_id=?1
-             ORDER BY f.display_order, f.slot_id",
-        )
-        .map_err(|error| error.to_string())?;
-    let items = statement
-        .query_map(params![character_id], |row| {
-            Ok(FoodItem {
-                id: row.get(0)?,
-                character_id: row.get(1)?,
-                slot_id: row.get(2)?,
-                food_level: row.get(3)?,
-                display_order: row.get(4)?,
-                name: row.get(5)?,
-                icon_path: row.get(6)?,
-                energy_delta: row.get(7)?,
-                affection_delta: row.get(8)?,
-                category: row.get(9)?,
-                rarity: row.get(10)?,
-                description: row.get(11)?,
-                enabled: row.get::<_, i64>(12)? == 1,
-                count: row.get(13)?,
-                created_at: row.get(14)?,
-                updated_at: row.get(15)?,
-            })
-        })
-        .map_err(|error| error.to_string())?
-        .collect::<rusqlite::Result<Vec<FoodItem>>>()
-        .map_err(|error| error.to_string())?;
-    Ok(items)
-}
-
-fn settings(connection: &Connection) -> Result<AppSettings, String> {
-    let mut defaults = default_settings();
-    let mut statement = connection
-        .prepare("SELECT key,value_json FROM settings")
-        .map_err(|error| error.to_string())?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(|error| error.to_string())?;
-
-    for row in rows {
-        let (key, value_json) = row.map_err(|error| error.to_string())?;
-        let value = serde_json::from_str::<Value>(&value_json).unwrap_or(Value::Null);
-        match key.as_str() {
-            "provider" => {
-                defaults.provider = value.as_str().unwrap_or("openai_compatible").to_string()
-            }
-            "modelName" => defaults.model_name = value.as_str().unwrap_or("gpt-4o").to_string(),
-            "autoStart" => defaults.auto_start = value.as_bool().unwrap_or(false),
-            "soundEnabled" => defaults.sound_enabled = value.as_bool().unwrap_or(true),
-            "ttsEnabled" => defaults.tts_enabled = value.as_bool().unwrap_or(false),
-            "volume" => defaults.volume = value.as_i64().unwrap_or(50),
-            "privacyLock" => defaults.privacy_lock = value.as_bool().unwrap_or(false),
-            "notificationPrefs" => {
-                defaults.notification_prefs = serde_json::from_value::<NotificationPrefs>(value)
-                    .unwrap_or(defaults.notification_prefs)
-            }
-            _ => {}
-        }
-    }
-    Ok(defaults)
 }
 
 fn sessions(connection: &Connection, character_id: &str) -> Result<Vec<ChatSession>, String> {
@@ -1647,9 +696,6 @@ fn fetch_bootstrap(app: &AppHandle, connection: &Connection) -> Result<Bootstrap
     let character = active_character(connection)?;
     Ok(BootstrapPayload {
         data_paths: resources::data_paths(app)?,
-        stats: stats(connection, &character.id)?,
-        foods: foods(connection, &character.id)?,
-        settings: settings(connection)?,
         sessions: sessions(connection, &character.id)?,
         messages: messages(connection, &character.id)?,
         characters: characters(connection)?,
@@ -1728,14 +774,6 @@ pub fn create_character(
             params![character_id, name, skin_id, prompt, frame_assets_path, opening_line, now],
         )
         .map_err(|error| error.to_string())?;
-    transaction
-        .execute(
-            "INSERT INTO pet_stats(character_id,energy,affection,today_chat_rounds,today_interaction_count,today_had_activity,reward_50_triggered,reward_100_triggered,last_chat_at,last_daily_settlement_at,last_weekly_inventory_clear_at,updated_at)
-             VALUES (?1,60,40,0,0,0,0,0,NULL,NULL,NULL,?2)",
-            params![character_id, now],
-        )
-        .map_err(|error| error.to_string())?;
-    seed_foods_for_character(&transaction, &character_id, &now)?;
     seed_default_session(&transaction, &character_id, &now)?;
     transaction.commit().map_err(|error| error.to_string())?;
     fetch_bootstrap(app, &connection)
@@ -1881,146 +919,24 @@ pub fn delete_character(app: &AppHandle, character_id: &str) -> Result<Bootstrap
     fetch_bootstrap(app, &connection)
 }
 
-pub fn delete_chat_session(app: &AppHandle, session_id: &str) -> Result<BootstrapPayload, String> {
-    let connection = open_connection(app)?;
-    let character = active_character(&connection)?;
-    let deleted = connection
-        .execute(
-            "DELETE FROM chat_sessions WHERE id=?1 AND character_id=?2",
-            params![session_id, character.id],
-        )
-        .map_err(|error| error.to_string())?;
-    if deleted == 0 {
-        return Err("聊天记录不存在。".to_string());
-    }
-    fetch_bootstrap(app, &connection)
-}
-
-fn ensure_daily_activity(
+fn ensure_session_owner(
     connection: &Connection,
+    session_id: &str,
     character_id: &str,
-    date: &str,
 ) -> Result<(), String> {
-    connection
-        .execute(
-            "INSERT OR IGNORE INTO daily_activity(date,character_id,chat_round_count,interaction_count,food_generated_count,affection_delta,energy_delta,settled_at)
-             VALUES (?1,?2,0,0,0,0,0,NULL)",
-            params![date, character_id],
+    let matches: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM chat_sessions WHERE id=?1 AND character_id=?2)",
+            params![session_id, character_id],
+            |row| row.get(0),
         )
         .map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-fn settle_one_day(
-    connection: &Connection,
-    character_id: &str,
-    settlement_at: DateTime<Local>,
-) -> Result<(), String> {
-    let current = stats(connection, character_id)?;
-    let mut affection = current.affection;
-    let active_delta = if affection <= 50.0 {
-        if current.today_had_activity {
-            2.0
-        } else {
-            -5.0
-        }
-    } else if current.today_had_activity {
-        1.0
+    if matches {
+        Ok(())
     } else {
-        -10.0
-    };
-    affection = clamp(affection + active_delta, 0.0, 100.0);
-    let energy_delta = if current.energy < 30.0 {
-        -2.0
-    } else if current.energy > 50.0 {
-        2.0
-    } else {
-        0.0
-    };
-    affection = clamp(affection + energy_delta, 0.0, 100.0);
-
-    let settlement = settlement_at.to_rfc3339();
-    let date = business_date_for(settlement_at - Duration::seconds(1));
-    ensure_daily_activity(connection, character_id, &date)?;
-    connection
-        .execute(
-            "UPDATE daily_activity
-             SET affection_delta=affection_delta+?1, energy_delta=energy_delta+?2, settled_at=?3
-             WHERE date=?4 AND character_id=?5",
-            params![
-                active_delta + energy_delta,
-                ENERGY_DEFAULT - current.energy,
-                settlement,
-                date,
-                character_id
-            ],
-        )
-        .map_err(|error| error.to_string())?;
-    connection
-        .execute(
-            "UPDATE pet_stats
-             SET affection=?1,
-                 energy=?2,
-                 today_chat_rounds=0,
-                 today_interaction_count=0,
-                 today_had_activity=0,
-                 reward_50_triggered=0,
-                 reward_100_triggered=0,
-                 last_daily_settlement_at=?3,
-                 updated_at=?3
-             WHERE character_id=?4",
-            params![affection, ENERGY_DEFAULT, settlement, character_id],
-        )
-        .map_err(|error| error.to_string())?;
-
-    if settlement_at.weekday() == Weekday::Mon {
-        connection
-            .execute(
-                "UPDATE food_inventory SET count=0, updated_at=?1 WHERE character_id=?2",
-                params![settlement, character_id],
-            )
-            .map_err(|error| error.to_string())?;
-        connection
-            .execute(
-                "UPDATE pet_stats SET last_weekly_inventory_clear_at=?1, updated_at=?1 WHERE character_id=?2",
-                params![settlement, character_id],
-            )
-            .map_err(|error| error.to_string())?;
+        Err("聊天会话不存在或不属于该人物。".to_string())
     }
-    Ok(())
 }
-
-fn run_due_settlements(connection: &Connection) -> Result<(), String> {
-    let now = Local::now();
-    let mut statement = connection
-        .prepare("SELECT character_id,last_daily_settlement_at,updated_at FROM pet_stats")
-        .map_err(|error| error.to_string())?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<String>>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })
-        .map_err(|error| error.to_string())?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|error| error.to_string())?;
-
-    for (character_id, last_settlement_at, updated_at) in rows {
-        let anchor_text = last_settlement_at.unwrap_or(updated_at);
-        let anchor = DateTime::parse_from_rfc3339(&anchor_text)
-            .map(|dt| dt.with_timezone(&Local))
-            .unwrap_or_else(|_| now);
-        let mut next = next_settlement_after(anchor);
-        while next <= now {
-            settle_one_day(connection, &character_id, next)?;
-            next = next + Duration::days(1);
-        }
-    }
-    Ok(())
-}
-
 fn get_or_create_session(
     connection: &Connection,
     character_id: &str,
@@ -2063,324 +979,6 @@ fn get_or_create_session(
         .ok_or_else(|| "Failed to create chat session.".to_string())
 }
 
-pub fn send_chat_message(
-    app: &AppHandle,
-    content: String,
-    session_id: Option<String>,
-) -> Result<ChatSendResult, String> {
-    let connection = open_connection(app)?;
-    let character = active_character(&connection)?;
-    let session = get_or_create_session(&connection, &character.id, session_id)?;
-    let now = now_string();
-    let date = local_date_key();
-    ensure_daily_activity(&connection, &character.id, &date)?;
-
-    let user_message = ChatMessage {
-        id: Uuid::new_v4().to_string(),
-        session_id: session.id.clone(),
-        character_id: character.id.clone(),
-        role: "user".to_string(),
-        content: content.clone(),
-        created_at: now.clone(),
-        token_count: content.chars().count() as i64,
-        metadata_json: None,
-    };
-    connection
-        .execute(
-            "INSERT INTO chat_messages(id,session_id,character_id,role,content,created_at,token_count,metadata_json)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,NULL)",
-            params![
-                user_message.id,
-                user_message.session_id,
-                user_message.character_id,
-                user_message.role,
-                user_message.content,
-                user_message.created_at,
-                user_message.token_count
-            ],
-        )
-        .map_err(|error| error.to_string())?;
-
-    connection
-        .execute(
-            "UPDATE pet_stats SET today_chat_rounds=today_chat_rounds+1,last_chat_at=?2,today_had_activity=1,energy=MAX(0,energy-1),updated_at=?2 WHERE character_id=?3",
-            params![date, now, character.id],
-        )
-        .map_err(|error| error.to_string())?;
-    connection
-        .execute(
-            "UPDATE daily_activity SET chat_round_count=chat_round_count+1 WHERE date=?1 AND character_id=?2",
-            params![date, character.id],
-        )
-        .map_err(|error| error.to_string())?;
-    let chat_rounds = stats(&connection, &character.id)?.today_chat_rounds;
-    maybe_drop_food(&connection, &character.id, &date, chat_rounds, 3, &now)?;
-
-    let reply = format!("I heard you: {content}. This is a local mock reply.");
-    let assistant_message = ChatMessage {
-        id: Uuid::new_v4().to_string(),
-        session_id: session.id.clone(),
-        character_id: character.id.clone(),
-        role: "assistant".to_string(),
-        content: reply,
-        created_at: now.clone(),
-        token_count: 0,
-        metadata_json: Some(json!({ "mock": true }).to_string()),
-    };
-    connection
-        .execute(
-            "INSERT INTO chat_messages(id,session_id,character_id,role,content,created_at,token_count,metadata_json)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-            params![
-                assistant_message.id,
-                assistant_message.session_id,
-                assistant_message.character_id,
-                assistant_message.role,
-                assistant_message.content,
-                assistant_message.created_at,
-                assistant_message.token_count,
-                assistant_message.metadata_json
-            ],
-        )
-        .map_err(|error| error.to_string())?;
-    connection
-        .execute(
-            "UPDATE chat_sessions SET updated_at=?1 WHERE id=?2",
-            params![now, session.id],
-        )
-        .map_err(|error| error.to_string())?;
-
-    Ok(ChatSendResult {
-        session,
-        user_message,
-        assistant_message,
-        stats: stats(&connection, &character.id)?,
-        foods: foods(&connection, &character.id)?,
-        triggered_state_key: "thinking".to_string(),
-    })
-}
-
-fn maybe_drop_food(
-    connection: &Connection,
-    character_id: &str,
-    date: &str,
-    source_count: i64,
-    interval: i64,
-    now: &str,
-) -> Result<(), String> {
-    if source_count <= 0 || source_count % interval != 0 {
-        return Ok(());
-    }
-    if !rand::thread_rng().gen_bool(FOOD_DROP_CHANCE) {
-        return Ok(());
-    }
-
-    let generated: i64 = connection
-        .query_row(
-            "SELECT food_generated_count FROM daily_activity WHERE date=?1 AND character_id=?2",
-            params![date, character_id],
-            |row| row.get(0),
-        )
-        .map_err(|error| error.to_string())?;
-
-    let roll = rand::thread_rng().gen_range(0..100);
-    let level = match roll {
-        0..=24 => 0,
-        25..=54 => 1,
-        55..=89 => 2,
-        _ => 3,
-    };
-    let pool = foods(connection, character_id)?
-        .into_iter()
-        .filter(|food| food.food_level == level)
-        .collect::<Vec<_>>();
-    if let Some(food) = pool.choose(&mut rand::thread_rng()) {
-        connection
-            .execute(
-                "UPDATE food_inventory SET count=count+1,updated_at=?1 WHERE character_id=?2 AND food_id=?3",
-                params![now, character_id, food.id],
-            )
-            .map_err(|error| error.to_string())?;
-        connection
-            .execute(
-                "UPDATE daily_activity SET food_generated_count=food_generated_count+1 WHERE date=?1 AND character_id=?2",
-                params![date, character_id],
-            )
-            .map_err(|error| error.to_string())?;
-    }
-    let _ = generated;
-    Ok(())
-}
-
-pub fn feed_food(app: &AppHandle, food_id: String) -> Result<FeedResult, String> {
-    let connection = open_connection(app)?;
-    let character = active_character(&connection)?;
-    let current_stats = stats(&connection, &character.id)?;
-    let food = foods(&connection, &character.id)?
-        .into_iter()
-        .find(|item| item.id == food_id)
-        .ok_or_else(|| "Food does not exist.".to_string())?;
-
-    if food.count <= 0 || !food.enabled {
-        return Ok(FeedResult {
-            food,
-            stats: current_stats,
-            triggered_state_key: "feed_blocked".to_string(),
-            message: "No inventory for this food.".to_string(),
-        });
-    }
-
-    let (energy_delta, affection_delta) = food_effect(food.food_level);
-    let next_energy = clamp(current_stats.energy + energy_delta, 0.0, 100.0);
-    let next_affection = clamp(current_stats.affection + affection_delta, 0.0, 100.0);
-    let now = now_string();
-
-    connection
-        .execute(
-            "UPDATE food_inventory SET count=count-1,updated_at=?1 WHERE character_id=?2 AND food_id=?3 AND count>0",
-            params![now, character.id, food.id],
-        )
-        .map_err(|error| error.to_string())?;
-    connection
-        .execute(
-            "UPDATE pet_stats SET energy=?1,affection=?2,updated_at=?3 WHERE character_id=?4",
-            params![next_energy, next_affection, now, character.id],
-        )
-        .map_err(|error| error.to_string())?;
-
-    let updated_food = foods(&connection, &character.id)?
-        .into_iter()
-        .find(|item| item.id == food.id)
-        .ok_or_else(|| "Failed to read food after feeding.".to_string())?;
-    let updated_stats = stats(&connection, &character.id)?;
-    let triggered_state_key = "feed_neutral";
-    Ok(FeedResult {
-        food: updated_food,
-        stats: updated_stats,
-        triggered_state_key: triggered_state_key.to_string(),
-        message: if food.food_level == 0 {
-            "Rick ate it, restored energy, and lost a little affection."
-        } else {
-            "Rick received the food."
-        }
-        .to_string(),
-    })
-}
-
-pub fn save_settings(app: &AppHandle, settings: AppSettings) -> Result<AppSettings, String> {
-    let connection = open_connection(app)?;
-    let now = now_string();
-    save_settings_values(&connection, &settings, &now)?;
-    Ok(settings)
-}
-
-pub fn reset_stats(app: &AppHandle) -> Result<BootstrapPayload, String> {
-    let connection = open_connection(app)?;
-    let character = active_character(&connection)?;
-    let now = now_string();
-    connection
-        .execute(
-            "UPDATE pet_stats
-             SET energy=60, affection=40, updated_at=?1
-             WHERE character_id=?2",
-            params![now, character.id],
-        )
-        .map_err(|error| error.to_string())?;
-    fetch_bootstrap(app, &connection)
-}
-
-pub fn replace_food(app: &AppHandle, request: FoodReplaceRequest) -> Result<FoodItem, String> {
-    let connection = open_connection(app)?;
-    let character = active_character(&connection)?;
-    let trimmed_name = request.name.trim();
-    if trimmed_name.is_empty() || trimmed_name.chars().count() > 20 {
-        return Err("Food name must be 1-20 characters.".to_string());
-    }
-    if !(request.icon_data_url.starts_with("data:image/png;")
-        || request.icon_data_url.starts_with("data:image/svg+xml;"))
-    {
-        return Err("Food icon must be PNG or SVG.".to_string());
-    }
-    let existing = foods(&connection, &character.id)?
-        .into_iter()
-        .find(|food| food.id == request.food_id)
-        .ok_or_else(|| "椋熺墿妲戒笉瀛樺湪".to_string())?;
-    let now = now_string();
-    connection
-        .execute(
-            "UPDATE foods SET name=?1, icon_path=?2, updated_at=?3 WHERE id=?4 AND character_id=?5",
-            params![
-                trimmed_name,
-                request.icon_data_url,
-                now,
-                request.food_id,
-                character.id
-            ],
-        )
-        .map_err(|error| error.to_string())?;
-    foods(&connection, &character.id)?
-        .into_iter()
-        .find(|food| food.id == existing.id)
-        .ok_or_else(|| "璇诲彇鏇挎崲鍚庣殑椋熺墿澶辫触".to_string())
-}
-
-pub fn reorder_foods(app: &AppHandle, food_ids: Vec<String>) -> Result<Vec<FoodItem>, String> {
-    if food_ids.len() != 9 {
-        return Err("Food order must include all 9 slots.".to_string());
-    }
-    let connection = open_connection(app)?;
-    let character = active_character(&connection)?;
-    let current = foods(&connection, &character.id)?;
-    let current_ids = current
-        .iter()
-        .map(|food| food.id.clone())
-        .collect::<std::collections::HashSet<_>>();
-    let requested_ids = food_ids
-        .iter()
-        .cloned()
-        .collect::<std::collections::HashSet<_>>();
-    if current_ids != requested_ids {
-        return Err("Food order cannot add or remove slots.".to_string());
-    }
-    let now = now_string();
-    for (index, id) in food_ids.iter().enumerate() {
-        connection
-            .execute(
-                "UPDATE foods SET display_order=?1, updated_at=?2 WHERE id=?3 AND character_id=?4",
-                params![(index + 1) as i64, now, id, character.id],
-            )
-            .map_err(|error| error.to_string())?;
-    }
-    foods(&connection, &character.id)
-}
-
-pub fn record_pet_interaction(app: &AppHandle) -> Result<BootstrapPayload, String> {
-    let connection = open_connection(app)?;
-    let character = active_character(&connection)?;
-    let now = now_string();
-    let date = local_date_key();
-    ensure_daily_activity(&connection, &character.id, &date)?;
-    connection
-        .execute(
-            "UPDATE pet_stats
-             SET today_interaction_count=today_interaction_count+1,
-                 today_had_activity=1,
-                 updated_at=?1
-             WHERE character_id=?2",
-            params![now, character.id],
-        )
-        .map_err(|error| error.to_string())?;
-    connection
-        .execute(
-            "UPDATE daily_activity SET interaction_count=interaction_count+1 WHERE date=?1 AND character_id=?2",
-            params![date, character.id],
-        )
-        .map_err(|error| error.to_string())?;
-    let interactions = stats(&connection, &character.id)?.today_interaction_count;
-    maybe_drop_food(&connection, &character.id, &date, interactions, 2, &now)?;
-    fetch_bootstrap(app, &connection)
-}
-
 // ==================== AI Provider CRUD ====================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2397,6 +995,7 @@ pub struct AiProviderConfig {
     pub max_output_tokens: i64,
     pub timeout_ms: i64,
     pub has_api_key: bool,
+    pub api_key_hint: Option<String>,
     pub is_active: bool,
     pub updated_at: i64,
 }
@@ -2430,14 +1029,193 @@ fn now_epoch() -> i64 {
         .as_secs() as i64
 }
 
+// One-time migration: keep old rows for rollback, and copy only the active
+// compatible connection (including its secret) into the single custom slot.
+fn migrate_ai_connections(connection: &Connection) -> Result<(), String> {
+    let migrated: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=3)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if migrated {
+        return Ok(());
+    }
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    let active_json: Option<String> = transaction
+        .query_row(
+            "SELECT value_json FROM settings WHERE key='activeAiProvider'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let active_id = active_json.and_then(|value| serde_json::from_str::<String>(&value).ok());
+    let previous: Option<(String, String)> = transaction
+        .query_row(
+            "SELECT provider_type,base_url FROM ai_provider_configs WHERE provider_id=?1",
+            params![active_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let use_custom = previous.as_ref().is_some_and(|(protocol, url)| {
+        protocol == crate::ai::AI_PROTOCOL
+            && (active_id.as_deref() != Some("deepseek")
+                || url.trim_end_matches('/') != crate::ai::DEEPSEEK_BASE_URL)
+    });
+    if use_custom && active_id.as_deref() != Some("custom") {
+        let copied = transaction.execute(
+            "INSERT OR IGNORE INTO ai_provider_configs
+             SELECT 'custom','openai-compatible','自定义接口',base_url,model,enabled,stream,temperature,max_output_tokens,timeout_ms,updated_at
+             FROM ai_provider_configs WHERE provider_id=?1", params![active_id],
+        ).map_err(|error| error.to_string())?;
+        if copied > 0 {
+            transaction
+                .execute(
+                    "INSERT OR IGNORE INTO ai_provider_secrets(provider_id,api_key,updated_at)
+             SELECT 'custom',api_key,updated_at FROM ai_provider_secrets WHERE provider_id=?1",
+                    params![active_id],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    // A formerly customized DeepSeek URL must never reuse its key at the
+    // official endpoint. Archive both fields together before resetting it.
+    let archive_id = format!("legacy-deepseek-{}", Uuid::new_v4());
+    let archived = transaction.execute(
+        "INSERT INTO ai_provider_configs SELECT ?1,provider_type,display_name,base_url,model,enabled,stream,temperature,max_output_tokens,timeout_ms,updated_at
+         FROM ai_provider_configs WHERE provider_id='deepseek' AND rtrim(base_url,'/')<>?2",
+        params![archive_id,crate::ai::DEEPSEEK_BASE_URL],
+    ).map_err(|error| error.to_string())?;
+    if archived > 0 {
+        transaction.execute(
+            "INSERT INTO ai_provider_secrets SELECT ?1,api_key,updated_at FROM ai_provider_secrets WHERE provider_id='deepseek'",
+            params![archive_id],
+        ).map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "DELETE FROM ai_provider_secrets WHERE provider_id='deepseek'",
+                [],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    transaction.execute(
+        "INSERT INTO ai_provider_configs(provider_id,provider_type,display_name,base_url,model,enabled,stream,temperature,max_output_tokens,timeout_ms,updated_at)
+         VALUES ('deepseek',?1,'DeepSeek',?2,?3,1,1,0.8,1200,60000,?4)
+         ON CONFLICT(provider_id) DO UPDATE SET provider_type=excluded.provider_type,display_name=excluded.display_name,
+           base_url=excluded.base_url,model=excluded.model,enabled=1,stream=1",
+        params![crate::ai::AI_PROTOCOL,crate::ai::DEEPSEEK_BASE_URL,crate::ai::DEEPSEEK_MODEL,now_epoch()],
+    ).map_err(|error| error.to_string())?;
+    transaction.execute(
+        "INSERT INTO settings(key,value_json,updated_at) VALUES ('activeAiProvider',?1,?2)
+         ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at",
+        params![json!(if use_custom { "custom" } else { "deepseek" }).to_string(), now_string()],
+    ).map_err(|error| error.to_string())?;
+    transaction
+        .execute(
+            "INSERT INTO schema_migrations(version,applied_at) VALUES (3,?1)",
+            params![now_string()],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())
+}
+
+pub(super) fn normalize_connection_request(
+    mut request: SaveAiProviderRequest,
+) -> Result<SaveAiProviderRequest, String> {
+    if !crate::ai::is_managed_connection(&request.provider_id)
+        || request.provider_type != crate::ai::AI_PROTOCOL
+    {
+        return Err("仅支持 DeepSeek 或高级设置中的 OpenAI 兼容接口。".to_string());
+    }
+    request.display_name = request.display_name.trim().to_string();
+    if request.display_name.is_empty()
+        || request.display_name.chars().count() > 40
+        || request.display_name.chars().any(char::is_control)
+    {
+        return Err("请填写 1 至 40 个字符的配置名称。".to_string());
+    }
+    if crate::ai::is_deepseek_connection(&request.provider_id) {
+        request.base_url = crate::ai::DEEPSEEK_BASE_URL.to_string();
+        request.model = request.model.trim().to_string();
+        if !crate::ai::is_deepseek_model(&request.model) {
+            return Err("请选择列表中的 DeepSeek 模型。".to_string());
+        }
+    } else {
+        request.base_url = request.base_url.trim().trim_end_matches('/').to_string();
+        request.model = request.model.trim().to_string();
+    }
+    let url = reqwest::Url::parse(&request.base_url)
+        .map_err(|_| "请填写完整的 HTTP / HTTPS 接口地址。".to_string())?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err("接口地址不能包含账号、密码或查询参数。".to_string());
+    }
+    if !request.temperature.unwrap_or(0.8).is_finite()
+        || !(0.0..=2.0).contains(&request.temperature.unwrap_or(0.8))
+        || !(1..=32768).contains(&request.max_output_tokens.unwrap_or(1200))
+        || !(1000..=180000).contains(&request.timeout_ms.unwrap_or(60000))
+    {
+        return Err("模型参数超出允许范围。".to_string());
+    }
+    if request.model.is_empty() {
+        return Err("请填写模型名称。".to_string());
+    }
+    if let Some(key) = &mut request.api_key {
+        *key = key.trim().to_string();
+        if reqwest::header::HeaderValue::from_str(&format!("Bearer {key}")).is_err() {
+            return Err("API Key 含有无效字符，请重新粘贴。".to_string());
+        }
+    }
+    Ok(request)
+}
+
 pub fn get_ai_config_public(app: &AppHandle) -> Result<Vec<AiProviderConfig>, String> {
     let connection = open_connection(app)?;
     let active_provider_id = get_active_ai_provider_id(app)?;
+    public_ai_configs(&connection, active_provider_id.as_deref())
+}
+
+fn credential_hint(value: &str) -> Option<String> {
+    if value.is_empty() {
+        return None;
+    }
+    match crate::credentials::load(value) {
+        Ok(key) if key.chars().count() >= 12 => {
+            let suffix: String = key
+                .chars()
+                .rev()
+                .take(4)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            Some(format!("•••• {suffix}"))
+        }
+        Ok(_) => Some("••••（已保存）".to_string()),
+        Err(_) => Some("已保存（需重新填写）".to_string()),
+    }
+}
+
+fn public_ai_configs(
+    connection: &Connection,
+    active_provider_id: Option<&str>,
+) -> Result<Vec<AiProviderConfig>, String> {
     let mut statement = connection
         .prepare(
             "SELECT c.provider_id, c.provider_type, c.display_name, c.base_url, c.model,
                     c.enabled, c.stream, c.temperature, c.max_output_tokens, c.timeout_ms, c.updated_at,
-                    CASE WHEN s.provider_id IS NOT NULL THEN 1 ELSE 0 END as has_key
+                    CASE WHEN COALESCE(s.api_key, '')<>'' THEN 1 ELSE 0 END as has_key,
+                    COALESCE(s.api_key, '')
              FROM ai_provider_configs c
              LEFT JOIN ai_provider_secrets s ON c.provider_id = s.provider_id
              ORDER BY c.display_name",
@@ -2458,7 +1236,12 @@ pub fn get_ai_config_public(app: &AppHandle) -> Result<Vec<AiProviderConfig>, St
                 timeout_ms: row.get(9)?,
                 updated_at: row.get(10)?,
                 has_api_key: row.get::<_, i64>(11)? == 1,
-                is_active: active_provider_id.as_deref() == Some(row.get::<_, String>(0)?.as_str()),
+                api_key_hint: if crate::ai::is_managed_connection(&row.get::<_, String>(0)?) {
+                    credential_hint(&row.get::<_, String>(12)?)
+                } else {
+                    None
+                },
+                is_active: active_provider_id == Some(row.get::<_, String>(0)?.as_str()),
             })
         })
         .map_err(|error| error.to_string())?
@@ -2467,11 +1250,193 @@ pub fn get_ai_config_public(app: &AppHandle) -> Result<Vec<AiProviderConfig>, St
     Ok(items)
 }
 
+fn resolve_preview(
+    req: SaveAiProviderRequest,
+    saved: Option<AiProviderFullConfig>,
+) -> Result<AiProviderFullConfig, String> {
+    let req = normalize_connection_request(req)?;
+    let new_key = req.api_key.as_deref().unwrap_or_default();
+    let api_key = if !new_key.is_empty() {
+        new_key.to_string()
+    } else if let Some(saved) = saved {
+        let same_origin = reqwest::Url::parse(&saved.config.base_url)
+            .ok()
+            .map(|url| url.origin())
+            == reqwest::Url::parse(&req.base_url)
+                .ok()
+                .map(|url| url.origin());
+        if !saved.api_key.is_empty() && !same_origin {
+            return Err("接口地址已更换，请重新填写 API Key。".to_string());
+        }
+        saved.api_key
+    } else {
+        String::new()
+    };
+    if crate::ai::is_deepseek_connection(&req.provider_id) && api_key.is_empty() {
+        return Err("请填写 DeepSeek API Key。".to_string());
+    }
+    Ok(AiProviderFullConfig {
+        config: AiProviderConfig {
+            provider_id: req.provider_id,
+            provider_type: req.provider_type,
+            display_name: req.display_name,
+            base_url: req.base_url,
+            model: req.model,
+            enabled: true,
+            stream: true,
+            temperature: req.temperature.unwrap_or(0.8),
+            max_output_tokens: req.max_output_tokens.unwrap_or(1200),
+            timeout_ms: req.timeout_ms.unwrap_or(60000),
+            has_api_key: !api_key.is_empty(),
+            api_key_hint: None,
+            is_active: false,
+            updated_at: 0,
+        },
+        api_key,
+    })
+}
+
+pub fn preview_ai_provider(
+    app: &AppHandle,
+    req: SaveAiProviderRequest,
+) -> Result<AiProviderFullConfig, String> {
+    if req
+        .api_key
+        .as_deref()
+        .is_some_and(|key| !key.trim().is_empty())
+    {
+        return resolve_preview(req, None);
+    }
+    let saved = get_ai_provider_full(app, &req.provider_id)?;
+    resolve_preview(req, saved)
+}
+fn migrate_api_credentials(connection: &Connection) -> Result<(), String> {
+    let _guard = CREDENTIAL_WRITES.lock().unwrap_or_else(|e| e.into_inner());
+    let rows: Vec<(String, String)> = {
+        let mut query = connection
+            .prepare("SELECT provider_id,api_key FROM ai_provider_secrets WHERE api_key<>''")
+            .map_err(|e| e.to_string())?;
+        let rows = query
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?
+    };
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|e| e.to_string())?;
+    let mut references: Vec<String> = Vec::new();
+    for (id, value) in rows {
+        if crate::credentials::is_reference(&value) {
+            continue;
+        }
+        let reference = match crate::credentials::store(&value) {
+            Ok(reference) => reference,
+            Err(error) => {
+                for item in &references {
+                    let _ = crate::credentials::delete(item);
+                }
+                return Err(error);
+            }
+        };
+        transaction
+            .execute(
+                "UPDATE ai_provider_secrets SET api_key=?1 WHERE provider_id=?2",
+                params![reference, id],
+            )
+            .map_err(|e| e.to_string())?;
+        references.push(reference);
+    }
+    transaction.commit().map_err(|e| e.to_string())
+}
+
+static CREDENTIAL_WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn cleanup_unreferenced_credential(connection: &Connection, value: &str) {
+    let count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM ai_provider_secrets WHERE api_key=?1",
+            [value],
+            |row| row.get(0),
+        )
+        .unwrap_or(1);
+    if count == 0 {
+        let _ = crate::credentials::delete(value);
+    }
+}
+
 pub fn save_ai_provider_config(
     app: &AppHandle,
     req: SaveAiProviderRequest,
 ) -> Result<AiProviderConfig, String> {
+    let _guard = CREDENTIAL_WRITES.lock().unwrap_or_else(|e| e.into_inner());
     let connection = open_connection(app)?;
+    let is_active = get_active_ai_provider_id(app)?.as_deref() == Some(req.provider_id.as_str());
+    let mut req = normalize_connection_request(req)?;
+    let previous: Option<String> = connection
+        .query_row(
+            "SELECT api_key FROM ai_provider_secrets WHERE provider_id=?1",
+            [&req.provider_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let reference = req
+        .api_key
+        .as_deref()
+        .filter(|key| !key.is_empty())
+        .map(crate::credentials::store)
+        .transpose()?;
+    if let Some(reference) = &reference {
+        req.api_key = Some(reference.clone());
+    }
+    match save_connection(&connection, req, is_active) {
+        Ok(config) => {
+            if let Some(previous) = previous {
+                cleanup_unreferenced_credential(&connection, &previous);
+            }
+            Ok(config)
+        }
+        Err(error) => {
+            if let Some(reference) = reference {
+                let _ = crate::credentials::delete(&reference);
+            }
+            Err(error)
+        }
+    }
+}
+
+fn save_connection(
+    connection: &Connection,
+    req: SaveAiProviderRequest,
+    is_active: bool,
+) -> Result<AiProviderConfig, String> {
+    let req = normalize_connection_request(req)?;
+    let connection = connection
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    let previous: Option<(String, String)> = connection.query_row(
+        "SELECT c.base_url,COALESCE(s.api_key,'') FROM ai_provider_configs c LEFT JOIN ai_provider_secrets s ON s.provider_id=c.provider_id WHERE c.provider_id=?1",
+        params![req.provider_id], |row| Ok((row.get(0)?,row.get(1)?)),
+    ).optional().map_err(|error| error.to_string())?;
+    let has_new_key = req.api_key.as_ref().is_some_and(|key| !key.is_empty());
+    if !has_new_key {
+        if let Some((url, key)) = &previous {
+            let same_origin = reqwest::Url::parse(url).ok().map(|url| url.origin())
+                == reqwest::Url::parse(&req.base_url)
+                    .ok()
+                    .map(|url| url.origin());
+            if !key.is_empty() && !same_origin {
+                return Err(
+                    "接口地址已更换，请重新填写 API Key，避免将旧密钥发送到其他服务。".to_string(),
+                );
+            }
+        }
+        if crate::ai::is_deepseek_connection(&req.provider_id)
+            && !previous.as_ref().is_some_and(|(_, key)| !key.is_empty())
+        {
+            return Err("请填写 DeepSeek API Key。".to_string());
+        }
+    }
     let now = now_epoch();
 
     connection
@@ -2480,6 +1445,7 @@ pub fn save_ai_provider_config(
              VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(provider_id) DO UPDATE SET
                provider_type=excluded.provider_type,
+               enabled=1,
                display_name=excluded.display_name,
                base_url=excluded.base_url,
                model=excluded.model,
@@ -2527,7 +1493,7 @@ pub fn save_ai_provider_config(
         .unwrap_or(0)
         > 0;
 
-    let is_active = get_active_ai_provider_id(app)?.as_deref() == Some(req.provider_id.as_str());
+    connection.commit().map_err(|error| error.to_string())?;
 
     Ok(AiProviderConfig {
         provider_id: req.provider_id,
@@ -2541,54 +1507,92 @@ pub fn save_ai_provider_config(
         max_output_tokens: req.max_output_tokens.unwrap_or(1200),
         timeout_ms: req.timeout_ms.unwrap_or(60000),
         has_api_key: has_key,
+        api_key_hint: None,
         is_active,
         updated_at: now,
     })
 }
 
-pub fn delete_ai_provider_api_key(app: &AppHandle, provider_id: String) -> Result<(), String> {
+pub fn delete_ai_connection(app: &AppHandle, provider_id: String) -> Result<(), String> {
+    let _guard = CREDENTIAL_WRITES.lock().unwrap_or_else(|e| e.into_inner());
     let connection = open_connection(app)?;
-    connection
-        .execute(
-            "DELETE FROM ai_provider_secrets WHERE provider_id=?1",
-            params![provider_id],
-        )
-        .map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-pub fn delete_ai_provider_config(app: &AppHandle, provider_id: String) -> Result<(), String> {
-    let connection = open_connection(app)?;
-    connection
-        .execute(
-            "DELETE FROM ai_provider_configs WHERE provider_id=?1",
-            params![provider_id],
-        )
-        .map_err(|error| error.to_string())?;
-    connection
-        .execute(
-            "DELETE FROM ai_provider_secrets WHERE provider_id=?1",
-            params![provider_id],
-        )
-        .map_err(|error| error.to_string())?;
+    let previous = delete_connection(&connection, &provider_id)?;
+    if let Some(previous) = previous {
+        cleanup_unreferenced_credential(&connection, &previous);
+    }
     Ok(())
 }
 
 pub fn set_active_ai_provider(app: &AppHandle, provider_id: String) -> Result<(), String> {
     let connection = open_connection(app)?;
+    activate_connection(&connection, &provider_id)
+}
+
+fn delete_connection(connection: &Connection, provider_id: &str) -> Result<Option<String>, String> {
+    if !crate::ai::is_managed_connection(provider_id) {
+        return Err("请在设置中选择 DeepSeek 或自定义接口。".to_string());
+    }
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|e| e.to_string())?;
+    if active_connection_id(&transaction)?.as_deref() == Some(provider_id) {
+        return Err("当前配置正在启用，请先启用另一个配置再删除。".to_string());
+    }
+    let previous = transaction
+        .query_row(
+            "SELECT api_key FROM ai_provider_secrets WHERE provider_id=?1",
+            [provider_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    transaction
+        .execute(
+            "DELETE FROM ai_provider_secrets WHERE provider_id=?1",
+            [provider_id],
+        )
+        .map_err(|e| e.to_string())?;
+    transaction
+        .execute(
+            "DELETE FROM ai_provider_configs WHERE provider_id=?1",
+            [provider_id],
+        )
+        .map_err(|e| e.to_string())?;
+    transaction.commit().map_err(|e| e.to_string())?;
+    Ok(previous)
+}
+
+fn activate_connection(connection: &Connection, provider_id: &str) -> Result<(), String> {
+    if !crate::ai::is_managed_connection(provider_id) {
+        return Err("请在设置中选择 DeepSeek 或自定义接口。".to_string());
+    }
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|e| e.to_string())?;
+    let exists: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM ai_provider_configs c WHERE c.provider_id=?1 AND c.provider_type=?2 AND c.enabled=1 AND (?3=0 OR EXISTS(SELECT 1 FROM ai_provider_secrets s WHERE s.provider_id=c.provider_id AND s.api_key<>'')))",
+        params![provider_id,crate::ai::AI_PROTOCOL,crate::ai::is_deepseek_connection(provider_id)], |row| row.get(0),
+    ).map_err(|error| error.to_string())?;
+    if !exists {
+        return Err("请先保存有效的聊天配置和 API Key。".to_string());
+    }
     let now = now_string();
-    connection
+    transaction
         .execute(
             "INSERT INTO settings(key, value_json, updated_at) VALUES ('activeAiProvider', ?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at",
             params![json!(provider_id).to_string(), now],
         )
         .map_err(|error| error.to_string())?;
-    Ok(())
+    transaction.commit().map_err(|e| e.to_string())
 }
 
 pub fn get_active_ai_provider_id(app: &AppHandle) -> Result<Option<String>, String> {
     let connection = open_connection(app)?;
+    active_connection_id(&connection)
+}
+
+fn active_connection_id(connection: &Connection) -> Result<Option<String>, String> {
     let result = connection
         .query_row(
             "SELECT value_json FROM settings WHERE key='activeAiProvider'",
@@ -2640,6 +1644,7 @@ pub fn get_active_ai_provider_internal(
                         timeout_ms: row.get(9)?,
                         updated_at: row.get(10)?,
                         has_api_key: !row.get::<_, String>(11)?.is_empty(),
+                        api_key_hint: None,
                         is_active: true,
                     },
                     api_key: row.get(11)?,
@@ -2649,7 +1654,12 @@ pub fn get_active_ai_provider_internal(
         .optional()
         .map_err(|error| error.to_string())?;
 
-    Ok(config)
+    config
+        .map(|mut config| {
+            config.api_key = crate::credentials::load(&config.api_key)?;
+            Ok(config)
+        })
+        .transpose()
 }
 
 pub fn save_assistant_message(
@@ -2659,6 +1669,7 @@ pub fn save_assistant_message(
     content: &str,
 ) -> Result<ChatMessage, String> {
     let connection = open_connection(app)?;
+    ensure_session_owner(&connection, session_id, character_id)?;
     let now = now_string();
     let message = ChatMessage {
         id: Uuid::new_v4().to_string(),
@@ -2703,8 +1714,6 @@ pub fn save_user_message(
     let connection = open_connection(app)?;
     let session = get_or_create_session(&connection, character_id, Some(session_id.to_string()))?;
     let now = now_string();
-    let date = local_date_key();
-    ensure_daily_activity(&connection, character_id, &date)?;
 
     let message = ChatMessage {
         id: Uuid::new_v4().to_string(),
@@ -2742,80 +1751,6 @@ pub fn save_user_message(
     Ok(message)
 }
 
-fn apply_hidden_rewards(
-    connection: &Connection,
-    character_id: &str,
-    now: &str,
-) -> Result<(), String> {
-    let current = stats(connection, character_id)?;
-    if current.today_chat_rounds >= 100 && !current.reward_100_triggered {
-        connection
-            .execute(
-                "UPDATE pet_stats
-                 SET energy=100,
-                     affection=MIN(100, affection+10),
-                     reward_100_triggered=1,
-                     updated_at=?1
-                 WHERE character_id=?2",
-                params![now, character_id],
-            )
-            .map_err(|error| error.to_string())?;
-    } else if current.today_chat_rounds >= 50
-        && !current.reward_50_triggered
-        && !current.reward_100_triggered
-    {
-        connection
-            .execute(
-                "UPDATE pet_stats SET energy=100, reward_50_triggered=1, updated_at=?1 WHERE character_id=?2",
-                params![now, character_id],
-            )
-            .map_err(|error| error.to_string())?;
-    }
-    Ok(())
-}
-
-fn record_completed_chat_round_with_connection(
-    connection: &Connection,
-    character_id: &str,
-    date: &str,
-    now: &str,
-) -> Result<(), String> {
-    ensure_daily_activity(connection, character_id, date)?;
-    connection
-        .execute(
-            "UPDATE pet_stats
-             SET today_chat_rounds=today_chat_rounds+1,
-                 today_had_activity=1,
-                 energy=MAX(0, energy-1),
-                 last_chat_at=?1,
-                 updated_at=?1
-             WHERE character_id=?2",
-            params![now, character_id],
-        )
-        .map_err(|error| error.to_string())?;
-    connection
-        .execute(
-            "UPDATE daily_activity SET chat_round_count=chat_round_count+1 WHERE date=?1 AND character_id=?2",
-            params![date, character_id],
-        )
-        .map_err(|error| error.to_string())?;
-    let rounds = stats(connection, character_id)?.today_chat_rounds;
-    maybe_drop_food(connection, character_id, date, rounds, 3, now)?;
-    apply_hidden_rewards(connection, character_id, now)?;
-    Ok(())
-}
-
-pub fn record_completed_chat_round(
-    app: &AppHandle,
-    character_id: &str,
-) -> Result<BootstrapPayload, String> {
-    let connection = open_connection(app)?;
-    let now = now_string();
-    let date = local_date_key();
-    record_completed_chat_round_with_connection(&connection, character_id, &date, &now)?;
-    fetch_bootstrap(app, &connection)
-}
-
 pub fn save_interrupted_ai_message(
     app: &AppHandle,
     session_id: &str,
@@ -2823,6 +1758,7 @@ pub fn save_interrupted_ai_message(
     content: &str,
 ) -> Result<BootstrapPayload, String> {
     let connection = open_connection(app)?;
+    ensure_session_owner(&connection, session_id, character_id)?;
     let now = now_string();
     if !content.trim().is_empty() {
         let message = ChatMessage {
@@ -2858,8 +1794,6 @@ pub fn save_interrupted_ai_message(
             )
             .map_err(|error| error.to_string())?;
     }
-    let date = local_date_key();
-    record_completed_chat_round_with_connection(&connection, character_id, &date, &now)?;
     fetch_bootstrap(app, &connection)
 }
 
@@ -2867,9 +1801,11 @@ pub fn save_interrupted_ai_message(
 pub fn get_chat_history(
     app: &AppHandle,
     session_id: &str,
+    character_id: &str,
     limit: usize,
 ) -> Result<Vec<ChatMessage>, String> {
     let connection = open_connection(app)?;
+    ensure_session_owner(&connection, session_id, character_id)?;
     let mut statement = connection
         .prepare(
             "SELECT id,session_id,character_id,role,content,created_at,token_count,metadata_json
@@ -2916,6 +1852,7 @@ pub fn get_ai_provider_full(
                         timeout_ms: row.get(9)?,
                         updated_at: row.get(10)?,
                         has_api_key: !row.get::<_, String>(11)?.is_empty(),
+                        api_key_hint: None,
                         is_active: active_provider_id.as_deref()
                             == Some(row.get::<_, String>(0)?.as_str()),
                     },
@@ -2925,5 +1862,10 @@ pub fn get_ai_provider_full(
         )
         .optional()
         .map_err(|error| error.to_string())?;
-    Ok(result)
+    result
+        .map(|mut config| {
+            config.api_key = crate::credentials::load(&config.api_key)?;
+            Ok(config)
+        })
+        .transpose()
 }
