@@ -1,8 +1,51 @@
-# BytePet
+<p align="center">
+  <img src="docs/assets/bytepet-idle.gif" width="154" height="154" alt="BytePet 默认角色安静待机的循环动画" />
+</p>
+
+<h1 align="center">BytePet</h1>
+
+<p align="center">
+  <strong>让桌面多一个陪着你的小伙伴。</strong><br />
+  轻量陪伴 · 自主动作 · AI 聊天 · 自定义角色
+</p>
+
+<p align="center">
+  <a href="https://github.com/Li-Rui-Zhe/BytePet/releases/tag/v0.2.0"><img src="docs/assets/badge-version.svg" alt="当前版本 v0.2.0" /></a>
+  <img src="docs/assets/badge-platforms.svg" alt="Windows 与 macOS，macOS 目前为实验性支持" />
+  <a href="LICENSE"><img src="docs/assets/badge-license.svg" alt="MIT 开源许可" /></a>
+</p>
+
+<p align="center">
+  <a href="#下载">下载安装</a> ·
+  <a href="#配置聊天">开启聊天</a> ·
+  <a href="docs/releases/v0.2.0.md">版本变化</a> ·
+  <a href="https://github.com/Li-Rui-Zhe/BytePet/issues">反馈问题</a>
+</p>
 
 BytePet 是一个基于 Tauri 2、React 和 Rust 构建的桌面 AI 桌宠。它支持可导入 PNG 序列帧角色、独立人物档案、AI 聊天（默认 DeepSeek，支持高级自定义接口）、主题颜色切换、托盘菜单和本地数据持久化。
 
 > 下文功能与教程对应 v0.2.0。源码推送不等于安装包已发布，请以对应标签的 Release 附件为准；main 可能包含尚未发布的后续改动。
+
+## 陪你待一会儿
+
+<table align="center">
+  <tr>
+    <td align="center">
+      <img src="docs/assets/bytepet-happy.gif" width="132" height="132" alt="默认角色开心状态的循环动画" /><br />
+      <strong>开心时，给你一点回应</strong><br />
+      用熟悉的角色和小动作，陪在桌面一角。
+    </td>
+    <td align="center">
+      <img src="docs/assets/bytepet-sleep.gif" width="132" height="132" alt="默认角色在休眠舱里睡觉的循环动画" /><br />
+      <strong>忙起来，也能安静休息</strong><br />
+      不用喂食、不用刷数值，想休息时就哄它睡觉。
+    </td>
+  </tr>
+</table>
+
+<p align="center"><sub>动图来自项目自带角色的真实序列帧，仅展示形象与动作，并非功能录屏。</sub></p>
+
+---
 
 ## 下载
 
